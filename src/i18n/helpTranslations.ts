@@ -124,7 +124,7 @@ const en: HelpTranslationBundle = {
     {
       title: 'Lines, Brush, Bezier & Shapes',
       badge: 'Right-Click Canvas',
-      desc: 'First sidebar button (or right-click anywhere on canvas) opens tools: Select, Brush (standard, soft glow, spray), Line, interactive Bezier curve, Circle, Square, Triangle, Arrow, and 12 polygons & stars.',
+      desc: 'First sidebar button (or right-click anywhere on canvas) opens tools: Select, Brush (standard, soft glow, spray), Line, interactive Bezier curve, Circle, Square (plus Grid with customizable rows & columns), Triangle, 8 Arrow styles (single, double, filled, open, anchor, measure), and 12 polygons & stars.',
     },
     {
       title: 'Closed Contours & Endpoint Snapping',
@@ -235,7 +235,7 @@ const ru: HelpTranslationBundle = {
     {
       title: 'Линии, кисть, Безье и фигуры',
       badge: 'ПКМ на холсте',
-      desc: 'Первая кнопка панели (или клик ПКМ по холсту) открывает режимы: Выбор, Кисть (обычная, размытая, пульверизатор), Линия, Кривая Безье с точками изгиба, Круг, Квадрат, Треугольник, Стрелка и 12 многоугольников/звёзд.',
+      desc: 'Первая кнопка панели (или клик ПКМ по холсту) открывает режимы: Выбор, Кисть (обычная, размытая, пульверизатор), Линия, Кривая Безье с точками изгиба, Круг, Квадрат (и Сетка с числом строк и столбцов), Треугольник, 8 видов стрелок (обычная, двухсторонняя, с заполнением и др.) и 12 многоугольников/звёзд.',
     },
     {
       title: 'Замкнутые контуры и магнит к концам',
@@ -346,7 +346,7 @@ const uk: HelpTranslationBundle = {
     {
       title: 'Лінії, пензель, Безьє і фігури',
       badge: 'ПКМ на полотні',
-      desc: 'Перша кнопка панелі (або клік ПКМ по полотну) відкриває режими: Вибір, Пензель (звичайний, м’який, аерограф), Лінія, крива Безьє, Коло, Квадрат, Трикутник, Стрілка та 12 багатокутників/зірок.',
+      desc: 'Перша кнопка панелі (або клік ПКМ по полотну) відкриває режими: Вибір, Пензель (звичайний, м’який, аерограф), Лінія, крива Безьє, Коло, Квадрат (та Сітка з кількістю рядків і стовпців), Трикутник, 8 видів стрілок (звичайна, двобічна, заповнена тощо) та 12 багатокутників/зірок.',
     },
     {
       title: 'Замкнуті контури і магніт до кінців',
@@ -457,7 +457,7 @@ const be: HelpTranslationBundle = {
     {
       title: 'Лініі, пэндзаль, Безье і фігуры',
       badge: 'ПКМ на палатне',
-      desc: 'Першая кнопка панэлі (або клік ПКМ па палатне) адкрывае рэжымы: Выбар, Пэндзаль (звычайны, мяккі, аэраграф), Лінія, крывая Безье, Кола, Квадрат, Трохвугольнік, Стрэлка і 12 шматкутнікаў/зорак.',
+      desc: 'Першая кнопка панэлі (або клік ПКМ па палатне) адкрывае рэжымы: Выбар, Пэндзаль (звычайны, мяккі, аэраграф), Лінія, крывая Безье, Кола, Квадрат (і Сетка з колькасцю радкоў і слупкоў), Трохвугольнік, 8 відаў стрэлак і 12 шматкутнікаў/зорак.',
     },
     {
       title: 'Замкнутыя контуры і магніт да канцоў',
@@ -568,7 +568,7 @@ const kk: HelpTranslationBundle = {
     {
       title: 'Сызықтар, қылқалам, Безье және пішіндер',
       badge: 'Кенепте ОЖБ',
-      desc: 'Панельдің бірінші батырмасы (немесе кенепте оң жақ батырма) Таңдау, Қылқалам (қарапайым, жұмсақ, бүріккіш), Сызық, Безье қисығы, Шеңбер, Шаршы, Үшбұрыш, Көрсеткіш және 12 көпбұрышты ашады.',
+      desc: 'Панельдің бірінші батырмасы (немесе кенепте оң жақ батырма) Таңдау, Қылқалам (қарапайым, жұмсақ, бүріккіш), Сызық, Безье қисығы, Шеңбер, Шаршы (және жол/баған торкөзі), Үшбұрыш, 8 түрлі көрсеткі және 12 көпбұрышты ашады.',
     },
     {
       title: 'Тұйық контурлар және ұштарын магниттеу',
@@ -679,7 +679,7 @@ const es: HelpTranslationBundle = {
     {
       title: 'Líneas, pincel, Bézier y formas',
       badge: 'Clic derecho',
-      desc: 'El primer botón (o clic derecho en el lienzo) abre: Selección, Pincel (estándar, suave, aerosol), Línea, curva Bézier interactiva, Círculo, Cuadrado, Triángulo, Flecha y 12 polígonos/estrellas.',
+      desc: 'El primer botón (o clic derecho en el lienzo) abre: Selección, Pincel (estándar, suave, aerosol), Línea, curva Bézier interactiva, Círculo, Cuadrado (y Cuadrícula con filas y columnas), Triángulo, 8 estilos de flecha y 12 polígonos/estrellas.',
     },
     {
       title: 'Contornos cerrados e imán de extremos',
@@ -790,7 +790,7 @@ const pt: HelpTranslationBundle = {
     {
       title: 'Linhas, pincel, Bézier e formas',
       badge: 'Botão direito',
-      desc: 'O primeiro botão (ou clique direito na tela) abre: Selecionar, Pincel (padrão, suave, spray), Linha, curva Bézier, Círculo, Quadrado, Triângulo, Seta e 12 polígonos/estrelas.',
+      desc: 'O primeiro botão (ou clique direito na tela) abre: Selecionar, Pincel (padrão, suave, spray), Linha, curva Bézier, Círculo, Quadrado (e Grade com linhas/colunas), Triângulo, 8 estilos de seta e 12 polígonos/estrelas.',
     },
     {
       title: 'Contornos fechados e ímã nas pontas',
@@ -901,7 +901,7 @@ const fr: HelpTranslationBundle = {
     {
       title: 'Lignes, pinceau, Bézier et formes',
       badge: 'Clic droit',
-      desc: 'Le 1er bouton (ou clic droit sur la toile) ouvre : Sélection, Pinceau (standard, doux, aérographe), Ligne, courbe de Bézier, Cercle, Carré, Triangle, Flèche et 12 polygones/étoiles.',
+      desc: 'Le 1er bouton (ou clic droit sur la toile) ouvre : Sélection, Pinceau (standard, doux, aérographe), Ligne, courbe de Bézier, Cercle, Carré (et Grille à lignes/colonnes), Triangle, 8 styles de flèche et 12 polygones/étoiles.',
     },
     {
       title: 'Contours fermés et aimant aux extrémités',
@@ -1012,7 +1012,7 @@ const de: HelpTranslationBundle = {
     {
       title: 'Linien, Pinsel, Bézier & Formen',
       badge: 'Rechtsklick Leinwand',
-      desc: 'Die erste Taste (oder Rechtsklick auf die Leinwand) öffnet: Auswahl, Pinsel (Standard, Weich, Sprühdose), Linie, interaktive Bézierkurve, Kreis, Rechteck, Dreieck, Pfeil sowie 12 Polygone/Sterne.',
+      desc: 'Die erste Taste (oder Rechtsklick auf die Leinwand) öffnet: Auswahl, Pinsel (Standard, Weich, Sprühdose), Linie, interaktive Bézierkurve, Kreis, Rechteck (samt Raster mit Zeilen & Spalten), Dreieck, 8 Pfeilstile sowie 12 Polygone/Sterne.',
     },
     {
       title: 'Geschlossene Konturen & Endpunkt-Magnet',
@@ -1123,7 +1123,7 @@ const it: HelpTranslationBundle = {
     {
       title: 'Linee, pennello, Bézier e forme',
       badge: 'Tasto destro',
-      desc: 'Il primo pulsante (o tasto destro sulla tela) apre: Seleziona, Pennello (standard, morbido, aerografo), Linea, curva di Bézier, Cerchio, Quadrato, Triangolo, Freccia e 12 poligoni/stelle.',
+      desc: 'Il primo pulsante (o tasto destro sulla tela) apre: Seleziona, Pennello (standard, morbido, aerografo), Linea, curva di Bézier, Cerchio, Quadrato (e Griglia con righe/colonne), Triangolo, 8 stili freccia e 12 poligoni/stelle.',
     },
     {
       title: 'Contorni chiusi e aggancio estremi',
@@ -1234,7 +1234,7 @@ const pl: HelpTranslationBundle = {
     {
       title: 'Linie, pędzel, Bézier i kształty',
       badge: 'PPM na płótnie',
-      desc: 'Pierwszy przycisk (lub PPM na płótnie) otwiera: Wybór, Pędzel (zwykły, miękki, aerograf), Linia, krzywa Béziera, Koło, Kwadrat, Trójkąt, Strzałka i 12 wielokątów/gwiazd.',
+      desc: 'Pierwszy przycisk (lub PPM na płótnie) otwiera: Wybór, Pędzel (zwykły, miękki, aerograf), Linia, krzywa Béziera, Koło, Kwadrat (oraz Siatka z liczbą wierszy i kolumn), Trójkąt, 8 stylów strzałek i 12 wielokątów/gwiazd.',
     },
     {
       title: 'Zamknięte kontury i przyciąganie końców',
@@ -1345,7 +1345,7 @@ const nl: HelpTranslationBundle = {
     {
       title: 'Lijnen, penseel, Bézier & vormen',
       badge: 'Rechtsklik canvas',
-      desc: 'De eerste knop (of rechtsklik op het canvas) opent: Selecteer, Penseel (standaard, zacht, spuitbus), Lijn, interactieve Béziercurve, Cirkel, Vierkant, Driehoek, Pijl en 12 veelhoeken/sterren.',
+      desc: 'De eerste knop (of rechtsklik op het canvas) opent: Selecteer, Penseel (standaard, zacht, spuitbus), Lijn, interactieve Béziercurve, Cirkel, Vierkant (en Raster met rijen & kolommen), Driehoek, 8 pijlstijlen en 12 veelhoeken/sterren.',
     },
     {
       title: 'Gesloten contouren & eindpunt-magneet',
@@ -1456,7 +1456,7 @@ const tr: HelpTranslationBundle = {
     {
       title: 'Çizgiler, fırça, Bézier ve şekiller',
       badge: 'Tuvalde sağ tık',
-      desc: 'İlk düğme (veya tuvalde sağ tık): Seç, Fırça (standart, yumuşak, sprey), Çizgi, etkileşimli Bézier eğrisi, Daire, Kare, Üçgen, Ok ve 12 çokgen/yıldız sunar.',
+      desc: 'İlk düğme (veya tuvalde sağ tık): Seç, Fırça (standart, yumuşak, sprey), Çizgi, etkileşimli Bézier eğrisi, Daire, Kare (ve satır/sütunlu Izgara), Üçgen, 8 Ok stili ve 12 çokgen/yıldız sunar.',
     },
     {
       title: 'Kapalı konturlar ve uç mıknatısı',
@@ -1567,7 +1567,7 @@ const ar: HelpTranslationBundle = {
     {
       title: 'الخطوط والفرشاة وبيزييه والأشكال',
       badge: 'زر الفأرة الأيمن',
-      desc: 'الزر الأول (أو النقر بالزر الأيمن على اللوحة) يفتح: تحديد، فرشاة (عادية، ناعمة، بخاخ)، خط، منحنى بيزييه، دائرة، مربع، مثلث، سهم و12 مضلعاً ونجمة.',
+      desc: 'الزر الأول (أو النقر بالزر الأيمن على اللوحة) يفتح: تحديد، فرشاة (عادية، ناعمة، بخاخ)، خط، منحنى بيزييه، دائرة، مربع (وشبكة بصفوف وأعمدة قابلة للتعديل)، مثلث، 8 أنماط سهم و12 مضلعاً ونجمة.',
     },
     {
       title: 'المسارات المغلقة ومغناطيس الأطراف',
@@ -1678,7 +1678,7 @@ const hi: HelpTranslationBundle = {
     {
       title: 'लाइन्स, ब्रश, बेज़ियर और शेप्स',
       badge: 'कैनवास पर राइट-क्लिक',
-      desc: 'पहला बटन (या कैनवास पर राइट-क्लिक) खोलता है: चयन, ब्रश (सामान्य, सॉफ्ट, स्प्रे), लाइन, इंटरैक्टिव बेज़ियर वक्र, वृत्त, वर्ग, त्रिभुज, तीर और 12 बहुभुज/तारे।',
+      desc: 'पहला बटन (या कैनवास पर राइट-क्लिक) खोलता है: चयन, ब्रश (सामान्य, सॉफ्ट, स्प्रे), लाइन, इंटरैक्टिव बेज़ियर वक्र, वृत्त, वर्ग (तथा पंक्ति-स्तंभ ग्रिड), त्रिभुज, 8 तीर शैलियाँ और 12 बहुभुज/तारे।',
     },
     {
       title: 'बंद कंटूर और एंडपॉइंट स्नैपिंग',
@@ -1789,7 +1789,7 @@ const zh: HelpTranslationBundle = {
     {
       title: '线条、画笔、贝塞尔与形状',
       badge: '画布右键菜单',
-      desc: '工具栏首个按钮（或在画布任意位置右键）可切换：选择、画笔（标准/柔边/喷枪）、直线、交互式贝塞尔曲线、圆形、方形、三角形、箭头及 12 种多边形/星形。',
+      desc: '工具栏首个按钮（或在画布任意位置右键）可切换：选择、画笔（标准/柔边/喷枪）、直线、交互式贝塞尔曲线、圆形、方形（及可调行列数的网格）、三角形、8 种箭头样式及 12 种多边形/星形。',
     },
     {
       title: '闭合轮廓与端点磁吸',
@@ -1900,7 +1900,7 @@ const ja: HelpTranslationBundle = {
     {
       title: '線・ブラシ・ベジェ・図形',
       badge: 'キャンバス右クリック',
-      desc: '最初のボタン（またはキャンバス上で右クリック）から選択・ブラシ（標準/ソフト/スプレー）・直線・ベジェ曲線・円・四角・三角・矢印・12種類の多角形/星が使えます。',
+      desc: '最初のボタン（またはキャンバス上で右クリック）から選択・ブラシ（標準/ソフト/スプレー）・直線・ベジェ曲線・円・四角（行数/列数を指定できるグリッド付）・三角・8種の矢印・12種類の多角形/星が使えます。',
     },
     {
       title: '閉じた輪郭と端点スナップ',
@@ -2011,7 +2011,7 @@ const ko: HelpTranslationBundle = {
     {
       title: '선, 브러시, 베지어 및 도형',
       badge: '캔버스 우클릭',
-      desc: '첫 번째 버튼(또는 캔버스 우클릭)으로 선택, 브러시(기본/부드러운/스프레이), 직선, 베지어 곡선, 원, 사각형, 삼각형, 화살표 및 12종 다각형/별을 엽니다.',
+      desc: '첫 번째 버튼(또는 캔버스 우클릭)으로 선택, 브러시(기본/부드러운/스프레이), 직선, 베지어 곡선, 원, 사각형(행/열 설정 가능한 격자 포함), 삼각형, 8종 화살표 및 12종 다각형/별을 엽니다.',
     },
     {
       title: '닫힌 윤곽 및 끝점 자석 스냅',
@@ -2122,7 +2122,7 @@ const vi: HelpTranslationBundle = {
     {
       title: 'Đường nét, cọ, Bézier & hình khối',
       badge: 'Chuột phải khung vẽ',
-      desc: 'Nút đầu tiên (hoặc chuột phải lên khung vẽ) mở: Chọn, Cọ (thường, mềm, phun), Đường thẳng, Đường cong Bézier, Tròn, Vuông, Tam giác, Mũi tên và 12 đa giác/ngôi sao.',
+      desc: 'Nút đầu tiên (hoặc chuột phải lên khung vẽ) mở: Chọn, Cọ (thường, mềm, phun), Đường thẳng, Đường cong Bézier, Tròn, Vuông (và Lưới tùy chỉnh hàng/cột), Tam giác, 8 kiểu mũi tên và 12 đa giác/ngôi sao.',
     },
     {
       title: 'Đường khép kín & hút điểm đầu cuối',
@@ -2233,7 +2233,7 @@ const id: HelpTranslationBundle = {
     {
       title: 'Garis, kuas, Bezier & bentuk',
       badge: 'Klik kanan kanvas',
-      desc: 'Tombol pertama (atau klik kanan di kanvas) membuka: Pilih, Kuas (standar, halus, semprot), Garis, kurva Bezier interaktif, Lingkaran, Persegi, Segitiga, Panah, dan 12 poligon/bintang.',
+      desc: 'Tombol pertama (atau klik kanan di kanvas) membuka: Pilih, Kuas (standar, halus, semprot), Garis, kurva Bezier interaktif, Lingkaran, Persegi (serta Kisi baris/kolom), Segitiga, 8 gaya panah, dan 12 poligon/bintang.',
     },
     {
       title: 'Kontur tertutup & magnet ujung',
@@ -2344,7 +2344,7 @@ const th: HelpTranslationBundle = {
     {
       title: 'เส้น พู่กัน เบซิเยร์ และรูปทรง',
       badge: 'คลิกขวาบนแคนวาส',
-      desc: 'ปุ่มแรก (หรือคลิกขวาบนแคนวาส) เปิดโหมด: เลือก, พู่กัน (ปกติ/ฟุ้ง/สเปรย์), เส้นตรง, เส้นโค้งเบซิเยร์, วงกลม, สี่เหลี่ยม, สามเหลี่ยม, ลูกศร และ 12 รูปหลายเหลี่ยม/ดาว',
+      desc: 'ปุ่มแรก (หรือคลิกขวาบนแคนวาส) เปิดโหมด: เลือก, พู่กัน (ปกติ/ฟุ้ง/สเปรย์), เส้นตรง, เส้นโค้งเบซิเยร์, วงกลม, สี่เหลี่ยม (และตารางปรับแถว/คอลัมน์ได้), สามเหลี่ยม, ลูกศร 8 รูปแบบ และ 12 รูปหลายเหลี่ยม/ดาว',
     },
     {
       title: 'เส้นปิดและแม่เหล็กดูดปลายเส้น',

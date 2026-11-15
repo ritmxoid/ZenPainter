@@ -17,6 +17,7 @@ import {
 } from './i18n/translations';
 import {
   ActivePopover,
+  ArrowVariant,
   BackgroundConfig,
   BackgroundMode,
   BrushType,
@@ -28,6 +29,7 @@ import {
   LanguagePreference,
   LinePattern,
   PolygonVariant,
+  RectGridConfig,
   SelectedObjectInfo,
   SelectedObjectKind,
   StampDefinition,
@@ -93,6 +95,16 @@ const CUSTOM_JSON_PROPS = [
   'cornerRoundRatio',
   'shapeSubtype',
   'isClosedContour',
+  'isGridRect',
+  'gridRows',
+  'gridCols',
+  'isArrowObject',
+  'arrowVariant',
+  'arrowLength',
+  'isArrowShaft',
+  'isArrowHeadStroke',
+  'isArrowHeadFill',
+  'isArrowTailDot',
 ];
 
 interface Point {
@@ -176,7 +188,8 @@ function extractObjectInfo(activeObj: any): SelectedObjectInfo | null {
     strokePattern = 'solid';
     doubleLine = false;
   } else if (obj.isArrowGroup && Array.isArray(obj._objects) && obj._objects[0]) {
-    const shaft = obj._objects[0];
+    const shaft =
+      obj._objects.find((c: any) => c.isArrowShaft) || obj._objects[0];
     const parsed = parseColorAndOpacity(shaft.stroke, obj.strokeOpacity ?? shaft.strokeOpacity);
     strokeColor = obj.strokeColorHex || shaft.strokeColorHex || parsed.hex;
     strokeOpacity = parsed.opacity;
@@ -255,13 +268,29 @@ function extractObjectInfo(activeObj: any): SelectedObjectInfo | null {
       obj.type === 'line' ||
       (obj.type === 'path' && Array.isArray(obj.path) && obj.path.length >= 2));
 
-  const isPolygonMorphable = targets.length === 1 && obj.type === 'polygon';
+  const isPolygonMorphable =
+    targets.length === 1 && obj.type === 'polygon' && !obj.isArrowObject;
   const polygonVariant =
     isPolygonMorphable &&
     typeof obj.shapeSubtype === 'string' &&
     obj.shapeSubtype !== 'triangle'
       ? (obj.shapeSubtype as PolygonVariant)
       : undefined;
+
+  const isRectEditable = targets.length === 1 && obj.type === 'rect';
+  const isGridRect = Boolean(isRectEditable && obj.isGridRect);
+  const gridRows = isRectEditable
+    ? Math.max(1, Math.min(24, Math.round(Number(obj.gridRows) || 3)))
+    : undefined;
+  const gridCols = isRectEditable
+    ? Math.max(1, Math.min(24, Math.round(Number(obj.gridCols) || 3)))
+    : undefined;
+
+  const isArrowMorphable =
+    targets.length === 1 && (Boolean(obj.isArrowGroup) || Boolean(obj.isArrowObject));
+  const arrowVariant: ArrowVariant | undefined = isArrowMorphable
+    ? ((obj.arrowVariant as ArrowVariant) || 'single')
+    : undefined;
 
   const firstRoundRatio = getObjectCornerRoundRatio(obj);
 
@@ -278,6 +307,12 @@ function extractObjectInfo(activeObj: any): SelectedObjectInfo | null {
     canToggleClosedContour: Boolean(canToggleClosedContour),
     isPolygonMorphable,
     polygonVariant,
+    isRectEditable,
+    isGridRect,
+    gridRows,
+    gridCols,
+    isArrowMorphable,
+    arrowVariant,
     selectionCount: targets.length,
     fill,
     opacity: typeof obj.opacity === 'number' ? obj.opacity : 1,
@@ -308,7 +343,13 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [activePopover, setActivePopover] = useState<ActivePopover>(null);
   const [activeMode, setActiveMode] = useState<DrawMode>('brush');
+  const [rectGrid, setRectGrid] = useState<RectGridConfig>({
+    enabled: false,
+    rows: 3,
+    cols: 3,
+  });
   const [polygonVariant, setPolygonVariant] = useState<PolygonVariant>('star5');
+  const [arrowVariant, setArrowVariant] = useState<ArrowVariant>('single');
   const [bgConfig, setBgConfig] = useState<BackgroundConfig>({
     mode: 'white',
     fillType: 'solid',
@@ -371,7 +412,9 @@ export default function App() {
 
   // Mutable refs for event handlers
   const activeModeRef = useRef<DrawMode>(activeMode);
+  const rectGridRef = useRef<RectGridConfig>(rectGrid);
   const polygonVariantRef = useRef<PolygonVariant>(polygonVariant);
+  const arrowVariantRef = useRef<ArrowVariant>(arrowVariant);
   const closedContourRef = useRef<boolean>(closedContour);
   const snapEnabledRef = useRef<boolean>(snapEnabled);
   const strokeRef = useRef<StrokeSettings>(stroke);
@@ -387,7 +430,9 @@ export default function App() {
   const activePopoverRef = useRef<ActivePopover>(activePopover);
 
   activeModeRef.current = activeMode;
+  rectGridRef.current = rectGrid;
   polygonVariantRef.current = polygonVariant;
+  arrowVariantRef.current = arrowVariant;
   closedContourRef.current = closedContour;
   snapEnabledRef.current = snapEnabled;
   strokeRef.current = stroke;
@@ -1471,7 +1516,13 @@ export default function App() {
       const zoom = fc.getZoom() || 1;
       const rawWidth = strokeRef.current.width;
       const isClosedShapeMode =
-        mode === 'rect' || mode === 'triangle' || mode === 'ellipse' || mode === 'star';
+        mode === 'rect' ||
+        mode === 'triangle' ||
+        mode === 'ellipse' ||
+        mode === 'star' ||
+        (mode === 'arrow' &&
+          (arrowVariantRef.current === 'filled' ||
+            arrowVariantRef.current === 'filledDouble'));
       const shapeStrokeWidth =
         isClosedShapeMode && fillRef.current.mode !== 'none'
           ? rawWidth
@@ -1573,6 +1624,9 @@ export default function App() {
           height: 0,
           fill: fillVal,
           fillMeta: fillMetaCopy,
+          isGridRect: rectGridRef.current.enabled,
+          gridRows: rectGridRef.current.rows,
+          gridCols: rectGridRef.current.cols,
           ...commonStroke,
           ...closedHitProps,
         });
@@ -1609,23 +1663,28 @@ export default function App() {
           }
         );
       } else if (mode === 'arrow') {
+        const curVariant = arrowVariantRef.current;
+        const isBlockArrow = curVariant === 'filled' || curVariant === 'filledDouble';
         shape = createArrowObject(
           startPt.x,
           startPt.y,
           startPt.x + 1,
           startPt.y + 1,
           effectiveStroke,
-          strokeRef.current.width,
+          shapeStrokeWidth,
           dash,
-          strokeRef.current.doubleLine
+          strokeRef.current.doubleLine,
+          curVariant,
+          isBlockArrow ? fillVal : undefined,
+          {
+            selectable: false,
+            evented: false,
+            strokeColorHex: strokeRef.current.color,
+            strokeOpacity: strokeRef.current.opacity,
+            strokePattern: strokeRef.current.pattern,
+            fillMeta: isBlockArrow ? fillMetaCopy : undefined,
+          }
         );
-        shape.set({
-          selectable: false,
-          evented: false,
-          strokeColorHex: strokeRef.current.color,
-          strokeOpacity: strokeRef.current.opacity,
-          strokePattern: strokeRef.current.pattern,
-        });
       }
 
       if (shape) {
@@ -1840,7 +1899,14 @@ export default function App() {
         tempShapeRef.current = nextPoly;
         fc.add(nextPoly);
       } else if (mode === 'arrow') {
-        const dash = getScaledDashArray(strokeRef.current.pattern, strokeRef.current.width);
+        const curVariant = arrowVariantRef.current;
+        const isBlockArrow = curVariant === 'filled' || curVariant === 'filledDouble';
+        const arrowStrokeWidth =
+          isBlockArrow && fillRef.current.mode !== 'none'
+            ? strokeRef.current.width
+            : Math.max(1, strokeRef.current.width);
+        const dash = getScaledDashArray(strokeRef.current.pattern, arrowStrokeWidth);
+        const arrowFillVal = isBlockArrow ? buildFillValue(fillRef.current) : undefined;
         fc.remove(shape);
         const nextArrow = createArrowObject(
           sx,
@@ -1848,17 +1914,20 @@ export default function App() {
           ex,
           ey,
           effectiveStroke,
-          strokeRef.current.width,
+          arrowStrokeWidth,
           dash,
-          strokeRef.current.doubleLine
+          strokeRef.current.doubleLine,
+          curVariant,
+          arrowFillVal,
+          {
+            selectable: false,
+            evented: false,
+            strokeColorHex: strokeRef.current.color,
+            strokeOpacity: strokeRef.current.opacity,
+            strokePattern: strokeRef.current.pattern,
+            fillMeta: isBlockArrow ? { ...fillRef.current } : undefined,
+          }
         );
-        nextArrow.set({
-          selectable: false,
-          evented: false,
-          strokeColorHex: strokeRef.current.color,
-          strokeOpacity: strokeRef.current.opacity,
-          strokePattern: strokeRef.current.pattern,
-        });
         tempShapeRef.current = nextArrow;
         fc.add(nextArrow);
       }
@@ -3144,22 +3213,32 @@ export default function App() {
           dirty: true,
         });
       } else if (obj.isArrowGroup && Array.isArray(obj._objects)) {
-        const [shaft, head] = obj._objects;
-        if (shaft) {
-          shaft.set({
-            stroke: effectiveStroke,
-            strokeColorHex: nextColor,
-            strokeOpacity: nextStrokeOpacity,
-            strokeWidth: nextWidth,
-            strokeDashArray: dash || undefined,
-            strokePattern: nextPattern,
-            doubleLine: nextDoubleLine,
-            dirty: true,
-          });
-        }
-        if (head) {
-          head.set({ fill: effectiveStroke, dirty: true });
-        }
+        const safeArrowW = Math.max(1, nextWidth);
+        const arrowDash = getScaledDashArray(nextPattern, safeArrowW);
+        obj._objects.forEach((child: any, idx: number) => {
+          if (child.isArrowShaft || (!child.isArrowHeadStroke && !child.isArrowHeadFill && !child.isArrowTailDot && idx === 0 && child.type === 'line')) {
+            child.set({
+              stroke: effectiveStroke,
+              strokeColorHex: nextColor,
+              strokeOpacity: nextStrokeOpacity,
+              strokeWidth: safeArrowW,
+              strokeDashArray: arrowDash || undefined,
+              strokePattern: nextPattern,
+              doubleLine: nextDoubleLine,
+              strokeUniform: true,
+              dirty: true,
+            });
+          } else if (child.isArrowHeadStroke) {
+            child.set({
+              stroke: effectiveStroke,
+              strokeWidth: safeArrowW,
+              strokeUniform: true,
+              dirty: true,
+            });
+          } else if (child.isArrowHeadFill || child.isArrowTailDot || idx > 0) {
+            child.set({ fill: effectiveStroke, dirty: true });
+          }
+        });
         obj.set({
           strokeColorHex: nextColor,
           strokeOpacity: nextStrokeOpacity,
@@ -3412,6 +3491,145 @@ export default function App() {
     }
     nextPoly.setCoords();
     fc.setActiveObject(nextPoly);
+    fc.requestRenderAll();
+    refreshSelectedInfo();
+    saveHistory();
+  };
+
+  const handleUpdateSelectedGrid = (nextGrid: RectGridConfig) => {
+    const fc = fabricCanvasRef.current;
+    const activeObj = fc?.getActiveObject();
+    if (!fc || !activeObj) return;
+
+    const targets = getEditableTargets(activeObj).filter((t) => t.type === 'rect');
+    if (targets.length === 0) return;
+
+    const rows = Math.max(1, Math.min(24, Math.round(nextGrid.rows)));
+    const cols = Math.max(1, Math.min(24, Math.round(nextGrid.cols)));
+
+    targets.forEach((obj: any) => {
+      const patch: any = {
+        isGridRect: nextGrid.enabled,
+        gridRows: rows,
+        gridCols: cols,
+        dirty: true,
+      };
+      if (nextGrid.enabled && (!obj.strokeWidth || obj.strokeWidth === 0)) {
+        const restoreColor = obj.strokeColorHex || '#000000';
+        const restoreOpacity =
+          typeof obj.strokeOpacity === 'number' ? obj.strokeOpacity : 1;
+        patch.strokeWidth = 1;
+        patch.stroke = applyColorOpacity(restoreColor, restoreOpacity);
+      }
+      obj.set(patch);
+      obj.setCoords();
+    });
+
+    activeObj.setCoords();
+    fc.requestRenderAll();
+    refreshSelectedInfo();
+    scheduleHistorySave();
+  };
+
+  const handleMorphSelectedArrow = (variant: ArrowVariant) => {
+    const fc = fabricCanvasRef.current;
+    const obj = fc?.getActiveObject();
+    if (!fc || !obj || (!obj.isArrowGroup && !obj.isArrowObject)) return;
+
+    const center = obj.getCenterPoint();
+    const baseLen =
+      typeof obj.arrowLength === 'number' && obj.arrowLength > 0
+        ? obj.arrowLength
+        : Math.max(24, obj.width || 80);
+    const effLen = Math.max(24, baseLen * Math.abs(obj.scaleX || 1));
+    const rad = ((obj.angle || 0) * Math.PI) / 180;
+    const dirSign = obj.flipX ? -1 : 1;
+    const ux = Math.cos(rad) * dirSign;
+    const uy = Math.sin(rad) * dirSign;
+    const x1 = center.x - ux * (effLen / 2);
+    const y1 = center.y - uy * (effLen / 2);
+    const x2 = center.x + ux * (effLen / 2);
+    const y2 = center.y + uy * (effLen / 2);
+
+    const shaft =
+      obj.isArrowGroup && Array.isArray(obj._objects)
+        ? obj._objects.find((c: any) => c.isArrowShaft) || obj._objects[0]
+        : null;
+    const strokeColorHex = obj.strokeColorHex || shaft?.strokeColorHex || strokeRef.current.color;
+    const strokeOpacityVal =
+      typeof obj.strokeOpacity === 'number'
+        ? obj.strokeOpacity
+        : typeof shaft?.strokeOpacity === 'number'
+          ? shaft.strokeOpacity
+          : 1;
+    const effectiveStroke = applyColorOpacity(strokeColorHex, strokeOpacityVal);
+    const rawStrokeW =
+      typeof obj.strokeWidth === 'number' && !obj.isArrowGroup
+        ? obj.strokeWidth
+        : typeof shaft?.strokeWidth === 'number'
+          ? shaft.strokeWidth
+          : strokeRef.current.width;
+    const isBlockVariant = variant === 'filled' || variant === 'filledDouble';
+    const nextFillMeta: FillSettings =
+      obj.fillMeta && obj.fillMeta.mode !== 'none'
+        ? { ...obj.fillMeta }
+        : fillRef.current.mode !== 'none'
+          ? { ...fillRef.current }
+          : {
+              mode: 'solid',
+              color: strokeColorHex,
+              opacity: 0.35,
+              hatchPattern: 'diagonal',
+            };
+    const nextWidth = isBlockVariant ? rawStrokeW : Math.max(1, rawStrokeW);
+    const nextPattern: LinePattern = obj.strokePattern || shaft?.strokePattern || 'solid';
+    const dash = getScaledDashArray(nextPattern, nextWidth);
+    const nextDouble = Boolean(obj.doubleLine || shaft?.doubleLine);
+    const nextFillVal = isBlockVariant ? buildFillValue(nextFillMeta) : undefined;
+
+    const nextArrow = createArrowObject(
+      x1,
+      y1,
+      x2,
+      y2,
+      effectiveStroke,
+      nextWidth,
+      dash,
+      nextDouble,
+      variant,
+      nextFillVal,
+      {
+        opacity: typeof obj.opacity === 'number' ? obj.opacity : 1,
+        flipY: Boolean(obj.flipY),
+        strokeColorHex,
+        strokeOpacity: strokeOpacityVal,
+        strokePattern: nextPattern,
+        fillMeta: isBlockVariant ? nextFillMeta : undefined,
+        cornerRoundRatio:
+          isBlockVariant && typeof obj.cornerRoundRatio === 'number'
+            ? obj.cornerRoundRatio
+            : 0,
+      }
+    );
+
+    if (
+      isBlockVariant &&
+      typeof obj.cornerRoundRatio === 'number' &&
+      obj.cornerRoundRatio > 0
+    ) {
+      applyCornerRoundingToObject(nextArrow, obj.cornerRoundRatio);
+    }
+
+    const idx = fc.getObjects().indexOf(obj);
+    fc.remove(obj);
+    if (idx >= 0) {
+      fc.insertAt(nextArrow, idx, false);
+    } else {
+      fc.add(nextArrow);
+    }
+    attachControlsToObject(nextArrow);
+    nextArrow.setCoords();
+    fc.setActiveObject(nextArrow);
     fc.requestRenderAll();
     refreshSelectedInfo();
     saveHistory();
@@ -3825,6 +4043,7 @@ export default function App() {
           info={selectedInfo}
           onUpdateStroke={handleUpdateSelectedStroke}
           onUpdateFill={handleUpdateSelectedFill}
+          onUpdateGrid={handleUpdateSelectedGrid}
           onUpdateOpacity={handleUpdateSelectedOpacity}
           onUpdateCornerRadius={handleUpdateSelectedCornerRadius}
           onUpdateText={handleUpdateSelectedText}
@@ -3845,8 +4064,13 @@ export default function App() {
           t={t}
           activeMode={activeMode}
           onSelectMode={handleSelectMode}
+          rectGrid={rectGrid}
+          onChangeRectGrid={setRectGrid}
+          onUpdateSelectedGrid={handleUpdateSelectedGrid}
           polygonVariant={polygonVariant}
           onSelectPolygonVariant={setPolygonVariant}
+          arrowVariant={arrowVariant}
+          onSelectArrowVariant={setArrowVariant}
           closedContour={closedContour}
           onToggleClosedContour={setClosedContour}
           snapEnabled={snapEnabled}
@@ -3862,6 +4086,7 @@ export default function App() {
           onUpdateSelectedCornerRadius={handleUpdateSelectedCornerRadius}
           onToggleSelectedClosedContour={handleToggleSelectedClosedContour}
           onMorphSelectedPolygon={handleMorphSelectedPolygon}
+          onMorphSelectedArrow={handleMorphSelectedArrow}
           onClearSelection={() => {
             const fc = fabricCanvasRef.current;
             if (!fc) return;

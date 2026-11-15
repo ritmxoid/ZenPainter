@@ -1,5 +1,6 @@
 import * as fabricModule from 'fabric';
 import {
+  ArrowVariant,
   BackgroundConfig,
   CanvasSizeConfig,
   ExportScope,
@@ -780,6 +781,49 @@ export function applyCornerRoundingToObject(obj: any, ratio: number): boolean {
   return false;
 }
 
+export function buildBlockArrowPoints(
+  variant: 'filled' | 'filledDouble',
+  length: number,
+  strokeWidth = 2
+): Array<{ x: number; y: number }> {
+  const L = Math.max(16, length);
+  const halfL = L / 2;
+  const sw = Math.max(1, strokeWidth);
+  if (variant === 'filledDouble') {
+    const headLen = Math.min(Math.max(13, sw * 2.1 + 10), L * 0.36);
+    const headHalfW = Math.max(8, headLen * 0.64);
+    const shaftHalfW = Math.max(3, Math.min(headHalfW * 0.46, sw * 1.1 + 3.5));
+    const leftNeck = -halfL + headLen;
+    const rightNeck = halfL - headLen;
+    return [
+      { x: -halfL, y: 0 },
+      { x: leftNeck, y: -headHalfW },
+      { x: leftNeck, y: -shaftHalfW },
+      { x: rightNeck, y: -shaftHalfW },
+      { x: rightNeck, y: -headHalfW },
+      { x: halfL, y: 0 },
+      { x: rightNeck, y: headHalfW },
+      { x: rightNeck, y: shaftHalfW },
+      { x: leftNeck, y: shaftHalfW },
+      { x: leftNeck, y: headHalfW },
+    ];
+  }
+
+  const headLen = Math.min(Math.max(14, sw * 2.4 + 12), L * 0.46);
+  const headHalfW = Math.max(8, headLen * 0.64);
+  const shaftHalfW = Math.max(3, Math.min(headHalfW * 0.46, sw * 1.1 + 3.5));
+  const neckX = halfL - headLen;
+  return [
+    { x: -halfL, y: -shaftHalfW },
+    { x: neckX, y: -shaftHalfW },
+    { x: neckX, y: -headHalfW },
+    { x: halfL, y: 0 },
+    { x: neckX, y: headHalfW },
+    { x: neckX, y: shaftHalfW },
+    { x: -halfL, y: shaftHalfW },
+  ];
+}
+
 export function createArrowObject(
   x1: number,
   y1: number,
@@ -788,54 +832,210 @@ export function createArrowObject(
   strokeColor: string,
   strokeWidth: number,
   dashArray: number[] | null,
-  doubleLine = false
+  doubleLine = false,
+  variant: ArrowVariant = 'single',
+  fillValue?: any,
+  extraProps: Record<string, any> = {}
 ): any {
   const fabric = getFabric();
   const dx = x2 - x1;
   const dy = y2 - y1;
-  const angle = Math.atan2(dy, dx);
-  const length = Math.hypot(dx, dy);
+  const angleRad = Math.atan2(dy, dx);
+  const angleDeg = (angleRad * 180) / Math.PI;
+  const length = Math.max(4, Math.hypot(dx, dy));
+  const halfL = length / 2;
+  const cx = (x1 + x2) / 2;
+  const cy = (y1 + y2) / 2;
 
-  const headLength = Math.min(Math.max(12, strokeWidth * 2.6 + 8), Math.max(12, length * 0.45));
-  const headWidth = headLength * 0.85;
+  if (variant === 'filled' || variant === 'filledDouble') {
+    const sw = Math.max(0, strokeWidth);
+    const pts = buildBlockArrowPoints(variant, length, Math.max(1, sw));
+    const poly = new fabric.Polygon(pts, {
+      fill: fillValue && fillValue !== 'transparent' ? fillValue : strokeColor,
+      stroke: sw > 0 ? strokeColor : null,
+      strokeWidth: sw,
+      strokeDashArray: dashArray || undefined,
+      doubleLine,
+      strokeUniform: true,
+      strokeLineJoin: 'round',
+      originX: 'center',
+      originY: 'center',
+      left: cx,
+      top: cy,
+      angle: angleDeg,
+      perPixelTargetFind: false,
+      targetFindTolerance: 16,
+      selectable: true,
+      evented: true,
+      isArrowObject: true,
+      arrowVariant: variant,
+      arrowLength: length,
+      ...extraProps,
+    });
+    poly.set({
+      baseLocalPoints: poly.points.map((p: any) => ({ x: p.x, y: p.y })),
+      baseWidth: poly.width,
+      baseHeight: poly.height,
+      basePathOffset: {
+        x: poly.pathOffset?.x || 0,
+        y: poly.pathOffset?.y || 0,
+      },
+      cornerRoundRatio:
+        typeof extraProps.cornerRoundRatio === 'number' ? extraProps.cornerRoundRatio : 0,
+    });
+    return poly;
+  }
 
-  // Shorten shaft slightly so it meets the base of the arrowhead cleanly
-  const shorten = Math.min(headLength * 0.65, length * 0.5);
-  const sx2 = x2 - Math.cos(angle) * shorten;
-  const sy2 = y2 - Math.sin(angle) * shorten;
+  const sw = Math.max(1, strokeWidth);
+  const isTwoEnded = variant === 'double' || variant === 'openDouble';
+  const headLength = Math.min(
+    Math.max(12, sw * 2.4 + 8),
+    Math.max(10, length * (isTwoEnded ? 0.34 : 0.45))
+  );
+  const headWidth = headLength * 0.88;
+  const halfHeadW = headWidth / 2;
 
-  const shaft = new fabric.Line([x1, y1, sx2, sy2], {
-    stroke: strokeColor,
-    strokeWidth,
-    strokeDashArray: dashArray || undefined,
-    strokeLineCap: 'round',
-    strokeUniform: true,
-    doubleLine,
-  });
+  const isOpenHead = variant === 'open' || variant === 'openDouble';
+  // For filled triangle heads, shorten the shaft back slightly so the stroke cap stays behind the tip
+  const shortenHead = isOpenHead ? Math.min(sw * 0.25, 2) : Math.min(headLength * 0.62, length * 0.45);
+  let shaftX1 = -halfL;
+  let shaftX2 = halfL - shortenHead;
 
-  const head = new fabric.Triangle({
-    width: headWidth,
-    height: headLength,
-    fill: strokeColor,
-    left: x2,
-    top: y2,
+  if (variant === 'double') {
+    shaftX1 = -halfL + shortenHead;
+    shaftX2 = halfL - shortenHead;
+  } else if (variant === 'openDouble') {
+    shaftX1 = -halfL + shortenHead;
+    shaftX2 = halfL - shortenHead;
+  } else if (variant === 'circleTail') {
+    const dotR = Math.min(Math.max(4, sw * 1.15 + 2.5), length * 0.16);
+    shaftX1 = -halfL + dotR;
+  }
+
+  if (shaftX2 < shaftX1) {
+    const mid = (shaftX1 + shaftX2) / 2;
+    shaftX1 = mid - 0.5;
+    shaftX2 = mid + 0.5;
+  }
+
+  const shaft = new fabric.Line([shaftX1, 0, shaftX2, 0], {
     originX: 'center',
     originY: 'center',
-    angle: (angle * 180) / Math.PI + 90,
+    left: (shaftX1 + shaftX2) / 2,
+    top: 0,
+    stroke: strokeColor,
+    strokeWidth: sw,
+    strokeDashArray: dashArray || undefined,
+    strokeLineCap: isOpenHead ? 'round' : 'butt',
+    strokeUniform: true,
+    doubleLine,
+    isArrowShaft: true,
   });
 
-  // Offset head back by half its height so tip lands accurately at (x2, y2)
-  head.set({
-    left: x2 - (Math.cos(angle) * headLength) / 2,
-    top: y2 - (Math.sin(angle) * headLength) / 2,
-  });
+  const children: any[] = [shaft];
 
-  return new fabric.Group([shaft, head], {
+  const makeFilledHead = (tipX: number, baseX: number) =>
+    new fabric.Polygon(
+      [
+        { x: baseX, y: -halfHeadW },
+        { x: tipX, y: 0 },
+        { x: baseX, y: halfHeadW },
+      ],
+      {
+        originX: 'center',
+        originY: 'center',
+        left: (tipX + baseX) / 2,
+        top: 0,
+        fill: strokeColor,
+        stroke: null,
+        strokeWidth: 0,
+        isArrowHeadFill: true,
+      }
+    );
+
+  const makeOpenHead = (tipX: number, backX: number) =>
+    new fabric.Polyline(
+      [
+        { x: backX, y: -halfHeadW },
+        { x: tipX, y: 0 },
+        { x: backX, y: halfHeadW },
+      ],
+      {
+        originX: 'center',
+        originY: 'center',
+        left: (tipX + backX) / 2,
+        top: 0,
+        fill: 'transparent',
+        stroke: strokeColor,
+        strokeWidth: sw,
+        strokeUniform: true,
+        strokeLineCap: 'round',
+        strokeLineJoin: 'round',
+        isArrowHeadStroke: true,
+      }
+    );
+
+  if (variant === 'open' || variant === 'openDouble') {
+    children.push(makeOpenHead(halfL, halfL - headLength));
+    if (variant === 'openDouble') {
+      children.push(makeOpenHead(-halfL, -halfL + headLength));
+    }
+  } else {
+    children.push(makeFilledHead(halfL, halfL - headLength));
+    if (variant === 'double') {
+      children.push(makeFilledHead(-halfL, -halfL + headLength));
+    }
+  }
+
+  if (variant === 'circleTail') {
+    const dotR = Math.min(Math.max(4, sw * 1.15 + 2.5), length * 0.16);
+    children.push(
+      new fabric.Circle({
+        radius: dotR,
+        originX: 'center',
+        originY: 'center',
+        left: -halfL + dotR,
+        top: 0,
+        fill: strokeColor,
+        stroke: null,
+        strokeWidth: 0,
+        isArrowTailDot: true,
+      })
+    );
+  } else if (variant === 'barTail') {
+    const barHalfH = Math.max(7, halfHeadW * 0.9);
+    children.push(
+      new fabric.Line([-halfL, -barHalfH, -halfL, barHalfH], {
+        originX: 'center',
+        originY: 'center',
+        left: -halfL,
+        top: 0,
+        stroke: strokeColor,
+        strokeWidth: sw,
+        strokeUniform: true,
+        strokeLineCap: 'round',
+        isArrowHeadStroke: true,
+      })
+    );
+  }
+
+  return new fabric.Group(children, {
+    originX: 'center',
+    originY: 'center',
+    left: cx,
+    top: cy,
+    angle: angleDeg,
     selectable: true,
     evented: true,
     strokeUniform: true,
+    perPixelTargetFind: false,
+    targetFindTolerance: 16,
     isArrowGroup: true,
+    isArrowObject: true,
+    arrowVariant: variant,
+    arrowLength: length,
     doubleLine,
+    ...extraProps,
   });
 }
 
@@ -1082,6 +1282,87 @@ export function installDoubleLineStrokeHook(): void {
     ctx.drawImage(doubleStrokeCanvas, 0, 0, cw, ch, 0, 0, cw, ch);
     ctx.restore();
   };
+
+  if (fabric.Rect && fabric.Rect.prototype) {
+    if (Array.isArray(fabric.Rect.prototype.cacheProperties)) {
+      ['isGridRect', 'gridRows', 'gridCols'].forEach((prop) => {
+        if (!fabric.Rect.prototype.cacheProperties.includes(prop)) {
+          fabric.Rect.prototype.cacheProperties.push(prop);
+        }
+      });
+    }
+
+    const origRectRender = fabric.Rect.prototype._render;
+    fabric.Rect.prototype._render = function (ctx: CanvasRenderingContext2D) {
+      origRectRender.call(this, ctx);
+
+      if (!this.isGridRect || !this.stroke || !this.strokeWidth || this.strokeWidth <= 0) {
+        return;
+      }
+
+      const rows = Math.max(1, Math.min(24, Math.round(Number(this.gridRows) || 1)));
+      const cols = Math.max(1, Math.min(24, Math.round(Number(this.gridCols) || 1)));
+      if (rows <= 1 && cols <= 1) {
+        return;
+      }
+
+      const w = this.width || 0;
+      const h = this.height || 0;
+      if (w < 4 || h < 4) return;
+
+      const x = -w / 2;
+      const y = -h / 2;
+      const rx = this.rx ? Math.min(this.rx, w / 2) : 0;
+      const ry = this.ry ? Math.min(this.ry, h / 2) : 0;
+      const isRounded = rx !== 0 || ry !== 0;
+      const k = 1 - 0.5522847498;
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(x + rx, y);
+      ctx.lineTo(x + w - rx, y);
+      if (isRounded) ctx.bezierCurveTo(x + w - k * rx, y, x + w, y + k * ry, x + w, y + ry);
+      ctx.lineTo(x + w, y + h - ry);
+      if (isRounded) ctx.bezierCurveTo(x + w, y + h - k * ry, x + w - k * rx, y + h, x + w - rx, y + h);
+      ctx.lineTo(x + rx, y + h);
+      if (isRounded) ctx.bezierCurveTo(x + k * rx, y + h, x, y + h - k * ry, x, y + h - ry);
+      ctx.lineTo(x, y + ry);
+      if (isRounded) ctx.bezierCurveTo(x, y + k * ry, x + k * rx, y, x + rx, y);
+      ctx.closePath();
+      ctx.clip();
+
+      const scaling = this.strokeUniform
+        ? this.group
+          ? this.getObjectScaling()
+          : { scaleX: this.scaleX || 1, scaleY: this.scaleY || 1 }
+        : { scaleX: 1, scaleY: 1 };
+      const sx = Math.max(0.01, Math.abs(scaling.scaleX || 1));
+      const sy = Math.max(0.01, Math.abs(scaling.scaleY || 1));
+
+      ctx.scale(1 / sx, 1 / sy);
+      this._setStrokeStyles(ctx, this);
+      this._setLineDash(ctx, this.strokeDashArray);
+      ctx.lineWidth = Math.max(0.5, this.strokeWidth * 0.85);
+      ctx.lineCap = 'butt';
+
+      const halfW = (w / 2) * sx;
+      const halfH = (h / 2) * sy;
+
+      ctx.beginPath();
+      for (let c = 1; c < cols; c++) {
+        const gx = -halfW + (c / cols) * (w * sx);
+        ctx.moveTo(gx, -halfH);
+        ctx.lineTo(gx, halfH);
+      }
+      for (let r = 1; r < rows; r++) {
+        const gy = -halfH + (r / rows) * (h * sy);
+        ctx.moveTo(-halfW, gy);
+        ctx.lineTo(halfW, gy);
+      }
+      ctx.stroke();
+      ctx.restore();
+    };
+  }
 }
 
 export function getObjectScreenRect(obj: any): {

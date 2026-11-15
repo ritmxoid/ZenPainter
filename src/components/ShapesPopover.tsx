@@ -1,13 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  ArrowUpRight,
   ChevronDown,
   Circle,
   Droplets,
+  Grid3X3,
   Magnet,
   Minus,
   MousePointer2,
   Pencil,
+  Plus,
   RefreshCw,
   Sparkles,
   Spline,
@@ -18,6 +19,7 @@ import {
 import { QUICK_COLOR_SWATCHES } from '../constants/fonts';
 import { TranslationKey } from '../i18n/translations';
 import {
+  ArrowVariant,
   BrushType,
   DrawMode,
   FillMode,
@@ -25,6 +27,7 @@ import {
   HatchPattern,
   LinePattern,
   PolygonVariant,
+  RectGridConfig,
   SelectedObjectInfo,
   StrokeSettings,
 } from '../types/paint';
@@ -34,8 +37,13 @@ interface ShapesPopoverProps {
   t: (key: TranslationKey) => string;
   activeMode: DrawMode;
   onSelectMode: (mode: DrawMode) => void;
+  rectGrid: RectGridConfig;
+  onChangeRectGrid: (next: RectGridConfig) => void;
+  onUpdateSelectedGrid?: (next: RectGridConfig) => void;
   polygonVariant: PolygonVariant;
   onSelectPolygonVariant: (variant: PolygonVariant) => void;
+  arrowVariant: ArrowVariant;
+  onSelectArrowVariant: (variant: ArrowVariant) => void;
   closedContour: boolean;
   onToggleClosedContour: (next: boolean) => void;
   snapEnabled: boolean;
@@ -58,6 +66,7 @@ interface ShapesPopoverProps {
   onUpdateSelectedCornerRadius?: (ratio: number) => void;
   onToggleSelectedClosedContour?: (next: boolean) => void;
   onMorphSelectedPolygon?: (variant: PolygonVariant) => void;
+  onMorphSelectedArrow?: (variant: ArrowVariant) => void;
   onClearSelection?: () => void;
   isDarkBg: boolean;
 }
@@ -93,12 +102,95 @@ const PolygonMiniIcon: React.FC<{ variant: PolygonVariant; className?: string }>
   );
 };
 
+const ARROW_VARIANTS: Array<{ id: ArrowVariant; labelKey: TranslationKey }> = [
+  { id: 'single', labelKey: 'arrowSingle' },
+  { id: 'double', labelKey: 'arrowDouble' },
+  { id: 'filled', labelKey: 'arrowFilled' },
+  { id: 'filledDouble', labelKey: 'arrowFilledDouble' },
+  { id: 'open', labelKey: 'arrowOpen' },
+  { id: 'openDouble', labelKey: 'arrowOpenDouble' },
+  { id: 'circleTail', labelKey: 'arrowCircleTail' },
+  { id: 'barTail', labelKey: 'arrowBarTail' },
+];
+
+const ArrowMiniIcon: React.FC<{ variant: ArrowVariant; className?: string }> = ({
+  variant,
+  className = 'w-4 h-4',
+}) => {
+  switch (variant) {
+    case 'double':
+      return (
+        <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <line x1="7" y1="12" x2="17" y2="12" />
+          <polygon points="15,8 20.5,12 15,16" fill="currentColor" stroke="none" />
+          <polygon points="9,8 3.5,12 9,16" fill="currentColor" stroke="none" />
+        </svg>
+      );
+    case 'filled':
+      return (
+        <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round">
+          <polygon points="3.5,9.5 13.5,9.5 13.5,6.2 20.5,12 13.5,17.8 13.5,14.5 3.5,14.5" fill="currentColor" fillOpacity="0.28" />
+        </svg>
+      );
+    case 'filledDouble':
+      return (
+        <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinejoin="round">
+          <polygon points="3.2,12 8.8,6.5 8.8,9.5 15.2,9.5 15.2,6.5 20.8,12 15.2,17.5 15.2,14.5 8.8,14.5 8.8,17.5" fill="currentColor" fillOpacity="0.28" />
+        </svg>
+      );
+    case 'open':
+      return (
+        <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <line x1="4" y1="12" x2="19.5" y2="12" />
+          <polyline points="14.5,7.2 20,12 14.5,16.8" />
+        </svg>
+      );
+    case 'openDouble':
+      return (
+        <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <line x1="4.5" y1="12" x2="19.5" y2="12" />
+          <polyline points="9,7.5 4,12 9,16.5" />
+          <polyline points="15,7.5 20,12 15,16.5" />
+        </svg>
+      );
+    case 'circleTail':
+      return (
+        <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="5.8" cy="12" r="2.3" fill="currentColor" stroke="none" />
+          <line x1="7" y1="12" x2="17" y2="12" />
+          <polygon points="15,8 20.5,12 15,16" fill="currentColor" stroke="none" />
+        </svg>
+      );
+    case 'barTail':
+      return (
+        <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <line x1="4.5" y1="7" x2="4.5" y2="17" />
+          <line x1="4.5" y1="12" x2="17" y2="12" />
+          <polygon points="15,8 20.5,12 15,16" fill="currentColor" stroke="none" />
+        </svg>
+      );
+    case 'single':
+    default:
+      return (
+        <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <line x1="4" y1="12" x2="17" y2="12" />
+          <polygon points="15,7.8 20.5,12 15,16.2" fill="currentColor" stroke="none" />
+        </svg>
+      );
+  }
+};
+
 export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
   t,
   activeMode,
   onSelectMode,
+  rectGrid,
+  onChangeRectGrid,
+  onUpdateSelectedGrid,
   polygonVariant,
   onSelectPolygonVariant,
+  arrowVariant,
+  onSelectArrowVariant,
   closedContour,
   onToggleClosedContour,
   snapEnabled,
@@ -114,12 +206,19 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
   onUpdateSelectedCornerRadius,
   onToggleSelectedClosedContour,
   onMorphSelectedPolygon,
+  onMorphSelectedArrow,
   onClearSelection,
   isDarkBg,
 }) => {
   const isEditingSelection = Boolean(selectedInfo);
+  const [rectExpanded, setRectExpanded] = useState(
+    activeMode === 'rect' || Boolean(selectedInfo?.isGridRect)
+  );
   const [polygonsExpanded, setPolygonsExpanded] = useState(
     activeMode === 'star' || Boolean(selectedInfo?.isPolygonMorphable)
+  );
+  const [arrowsExpanded, setArrowsExpanded] = useState(
+    activeMode === 'arrow' || Boolean(selectedInfo?.isArrowMorphable)
   );
   const patternLongPressTimerRef = useRef<number | null>(null);
   const patternLongPressTriggeredRef = useRef(false);
@@ -128,8 +227,22 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
   useEffect(() => {
     if (selectedInfo?.isPolygonMorphable) {
       setPolygonsExpanded(true);
+      setArrowsExpanded(false);
+      setRectExpanded(false);
+    } else if (selectedInfo?.isArrowMorphable) {
+      setArrowsExpanded(true);
+      setPolygonsExpanded(false);
+      setRectExpanded(false);
+    } else if (selectedInfo?.isGridRect) {
+      setRectExpanded(true);
+      setPolygonsExpanded(false);
+      setArrowsExpanded(false);
     }
-  }, [selectedInfo?.isPolygonMorphable]);
+  }, [
+    selectedInfo?.isPolygonMorphable,
+    selectedInfo?.isArrowMorphable,
+    selectedInfo?.isGridRect,
+  ]);
 
   const clearPatternLongPress = () => {
     if (patternLongPressTimerRef.current !== null) {
@@ -156,6 +269,22 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
   const activeVariantMeta =
     POLYGON_VARIANTS.find((v) => v.id === activePolyId) || POLYGON_VARIANTS[0];
 
+  const activeArrowId: ArrowVariant =
+    isEditingSelection && selectedInfo?.isArrowMorphable && selectedInfo.arrowVariant
+      ? selectedInfo.arrowVariant
+      : arrowVariant;
+  const activeArrowMeta =
+    ARROW_VARIANTS.find((v) => v.id === activeArrowId) || ARROW_VARIANTS[0];
+
+  const displayRectGrid: RectGridConfig =
+    isEditingSelection && selectedInfo?.isRectEditable
+      ? {
+          enabled: Boolean(selectedInfo.isGridRect),
+          rows: selectedInfo.gridRows ?? rectGrid.rows,
+          cols: selectedInfo.gridCols ?? rectGrid.cols,
+        }
+      : rectGrid;
+
   const modeOptions: Array<{
     id: DrawMode;
     labelKey: TranslationKey;
@@ -166,7 +295,19 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
     { id: 'line', labelKey: 'modeLine', icon: <Minus className="w-4 h-4" /> },
     { id: 'bezier', labelKey: 'modeBezier', icon: <Spline className="w-4 h-4" /> },
     { id: 'ellipse', labelKey: 'modeEllipse', icon: <Circle className="w-4 h-4" /> },
-    { id: 'rect', labelKey: 'modeRect', icon: <Square className="w-4 h-4" /> },
+    {
+      id: 'rect',
+      labelKey:
+        (activeMode === 'rect' || (isEditingSelection && selectedInfo?.isRectEditable)) &&
+        displayRectGrid.enabled
+          ? 'rectGrid'
+          : 'modeRect',
+      icon: displayRectGrid.enabled ? (
+        <Grid3X3 className="w-4 h-4" />
+      ) : (
+        <Square className="w-4 h-4" />
+      ),
+    },
     { id: 'triangle', labelKey: 'modeTriangle', icon: <Triangle className="w-4 h-4" /> },
     {
       id: 'star',
@@ -176,7 +317,14 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
           : 'modeStar',
       icon: <PolygonMiniIcon variant={activePolyId} />,
     },
-    { id: 'arrow', labelKey: 'modeArrow', icon: <ArrowUpRight className="w-4 h-4" /> },
+    {
+      id: 'arrow',
+      labelKey:
+        activeMode === 'arrow' || (isEditingSelection && selectedInfo?.isArrowMorphable)
+          ? activeArrowMeta.labelKey
+          : 'modeArrow',
+      icon: <ArrowMiniIcon variant={activeArrowId} />,
+    },
   ];
 
   const linePatterns: Array<{ id: LinePattern; labelKey: TranslationKey; dash: string }> = [
@@ -239,6 +387,21 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
     }
   };
 
+  const applyRectGridUpdate = (nextGrid: RectGridConfig) => {
+    const clamped: RectGridConfig = {
+      enabled: nextGrid.enabled,
+      rows: Math.max(1, Math.min(24, Math.round(nextGrid.rows))),
+      cols: Math.max(1, Math.min(24, Math.round(nextGrid.cols))),
+    };
+    onChangeRectGrid(clamped);
+    if (clamped.enabled && displayStroke.width === 0) {
+      applyStrokeUpdate({ width: 1 });
+    }
+    if (isEditingSelection && selectedInfo?.isRectEditable) {
+      onUpdateSelectedGrid?.(clamped);
+    }
+  };
+
   const canCloseContour =
     activeMode === 'line' ||
     activeMode === 'bezier' ||
@@ -250,8 +413,18 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
       : closedContour;
   const canSnapEndpoints =
     activeMode === 'line' || activeMode === 'bezier' || activeMode === 'select';
+  const isFilledArrowActive =
+    (activeMode === 'arrow' &&
+      (arrowVariant === 'filled' || arrowVariant === 'filledDouble')) ||
+    Boolean(
+      isEditingSelection &&
+        selectedInfo?.isArrowMorphable &&
+        (selectedInfo.arrowVariant === 'filled' ||
+          selectedInfo.arrowVariant === 'filledDouble')
+    );
   const isClosedShape =
     CLOSED_SHAPE_MODES.includes(activeMode) ||
+    isFilledArrowActive ||
     (canCloseContour && displayClosedContour) ||
     Boolean(isEditingSelection && selectedInfo?.kind === 'closedShape');
   const canZeroStroke =
@@ -316,23 +489,84 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
           <div className="grid grid-cols-3 gap-1.5">
             {modeOptions.map((item) => {
               const active = activeMode === item.id;
+              const isRectItem = item.id === 'rect';
               const isStarItem = item.id === 'star';
+              const isArrowItem = item.id === 'arrow';
+              const hasSubMenu = isRectItem || isStarItem || isArrowItem;
+              const isExpanded = isRectItem
+                ? rectExpanded
+                : isStarItem
+                  ? polygonsExpanded
+                  : isArrowItem
+                    ? arrowsExpanded
+                    : false;
+
+              const toggleSubMenu = () => {
+                if (isRectItem) {
+                  setRectExpanded((prev) => !prev);
+                  setPolygonsExpanded(false);
+                  setArrowsExpanded(false);
+                } else if (isStarItem) {
+                  setPolygonsExpanded((prev) => !prev);
+                  setRectExpanded(false);
+                  setArrowsExpanded(false);
+                } else if (isArrowItem) {
+                  setArrowsExpanded((prev) => !prev);
+                  setRectExpanded(false);
+                  setPolygonsExpanded(false);
+                }
+              };
+
               return (
                 <button
                   key={item.id}
                   type="button"
                   onClick={() => {
-                    if (isStarItem) {
+                    if (isRectItem) {
+                      if (isEditingSelection && selectedInfo?.isRectEditable) {
+                        toggleSubMenu();
+                      } else if (activeMode !== 'rect') {
+                        onSelectMode('rect');
+                        setRectExpanded(true);
+                        setPolygonsExpanded(false);
+                        setArrowsExpanded(false);
+                      } else {
+                        toggleSubMenu();
+                      }
+                    } else if (isStarItem) {
                       if (isEditingSelection && selectedInfo?.isPolygonMorphable) {
-                        setPolygonsExpanded((prev) => !prev);
+                        toggleSubMenu();
                       } else if (activeMode !== 'star') {
                         onSelectMode('star');
                         setPolygonsExpanded(true);
+                        setRectExpanded(false);
+                        setArrowsExpanded(false);
                       } else {
-                        setPolygonsExpanded((prev) => !prev);
+                        toggleSubMenu();
+                      }
+                    } else if (isArrowItem) {
+                      const isBlockVariant =
+                        arrowVariant === 'filled' || arrowVariant === 'filledDouble';
+                      if (
+                        stroke.width === 0 &&
+                        !(isBlockVariant && fill.mode !== 'none')
+                      ) {
+                        onChangeStroke({ ...stroke, width: 1 });
+                      }
+                      if (isEditingSelection && selectedInfo?.isArrowMorphable) {
+                        toggleSubMenu();
+                      } else if (activeMode !== 'arrow') {
+                        onSelectMode('arrow');
+                        setArrowsExpanded(true);
+                        setRectExpanded(false);
+                        setPolygonsExpanded(false);
+                      } else {
+                        toggleSubMenu();
                       }
                     } else {
+                      setRectExpanded(false);
                       setPolygonsExpanded(false);
+                      setArrowsExpanded(false);
                       const supportsClosedWithFill =
                         CLOSED_SHAPE_MODES.includes(item.id) ||
                         (closedContour &&
@@ -358,17 +592,17 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
                 >
                   {item.icon}
                   <span className="truncate max-w-full leading-tight">{t(item.labelKey)}</span>
-                  {isStarItem && (
+                  {hasSubMenu && (
                     <span
                       onClick={(e) => {
                         e.stopPropagation();
-                        setPolygonsExpanded((prev) => !prev);
+                        toggleSubMenu();
                       }}
                       className="absolute top-1 right-1 p-0.5 rounded hover:bg-black/10"
                     >
                       <ChevronDown
                         className={`w-3 h-3 opacity-75 transition-transform duration-150 ${
-                          polygonsExpanded ? 'rotate-180' : ''
+                          isExpanded ? 'rotate-180' : ''
                         }`}
                       />
                     </span>
@@ -377,6 +611,165 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
               );
             })}
           </div>
+
+          {/* Expandable Sub-Panel for Rectangle / Grid */}
+          {rectExpanded && (
+            <div
+              className={`mt-2.5 p-2.5 rounded-xl border ${
+                isDarkBg
+                  ? 'border-neutral-700/80 bg-neutral-800/60'
+                  : 'border-slate-200/80 bg-slate-50/90'
+              }`}
+            >
+              <div className={`text-[10px] font-semibold uppercase tracking-wider mb-1.5 px-0.5 ${mutedText}`}>
+                {t('rectOptionsLabel')}
+              </div>
+              <div className={`grid grid-cols-2 gap-1 p-1 rounded-xl ${subSurface}`}>
+                <button
+                  type="button"
+                  onClick={() => applyRectGridUpdate({ ...displayRectGrid, enabled: false })}
+                  className={`min-h-[34px] px-2 py-1 rounded-lg flex items-center justify-center gap-1.5 text-[11px] font-medium transition-colors cursor-pointer ${
+                    !displayRectGrid.enabled
+                      ? isDarkBg
+                        ? 'bg-neutral-900 text-white shadow-sm'
+                        : 'bg-white text-slate-900 shadow-sm'
+                      : isDarkBg
+                        ? 'text-neutral-300 hover:text-white'
+                        : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <Square className="w-3.5 h-3.5" />
+                  <span className="truncate">{t('rectPlain')}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    applyRectGridUpdate({
+                      enabled: true,
+                      rows: Math.max(2, displayRectGrid.rows || 3),
+                      cols: Math.max(2, displayRectGrid.cols || 3),
+                    })
+                  }
+                  className={`min-h-[34px] px-2 py-1 rounded-lg flex items-center justify-center gap-1.5 text-[11px] font-medium transition-colors cursor-pointer ${
+                    displayRectGrid.enabled
+                      ? 'bg-blue-600 text-white shadow-sm'
+                      : isDarkBg
+                        ? 'text-neutral-300 hover:text-white'
+                        : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <Grid3X3 className="w-3.5 h-3.5" />
+                  <span className="truncate">{t('rectGrid')}</span>
+                </button>
+              </div>
+
+              {displayRectGrid.enabled && (
+                <div className="grid grid-cols-2 gap-2 mt-2">
+                  <div
+                    className={`rounded-lg p-1.5 border ${
+                      isDarkBg
+                        ? 'border-neutral-700 bg-neutral-900/60'
+                        : 'border-slate-200 bg-white'
+                    }`}
+                  >
+                    <div className={`text-[10px] font-medium mb-1 text-center ${mutedText}`}>
+                      {t('gridRows')}
+                    </div>
+                    <div className="flex items-center justify-between gap-1">
+                      <button
+                        type="button"
+                        aria-label={`${t('gridRows')} -`}
+                        onClick={() =>
+                          applyRectGridUpdate({
+                            ...displayRectGrid,
+                            rows: Math.max(1, displayRectGrid.rows - 1),
+                          })
+                        }
+                        className={`w-7 h-7 rounded-md flex items-center justify-center cursor-pointer transition-colors ${
+                          isDarkBg
+                            ? 'bg-neutral-800 hover:bg-neutral-700 text-neutral-200'
+                            : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                        }`}
+                      >
+                        <Minus className="w-3 h-3" />
+                      </button>
+                      <span className="text-xs font-bold tabular-nums min-w-[22px] text-center">
+                        {displayRectGrid.rows}
+                      </span>
+                      <button
+                        type="button"
+                        aria-label={`${t('gridRows')} +`}
+                        onClick={() =>
+                          applyRectGridUpdate({
+                            ...displayRectGrid,
+                            rows: Math.min(24, displayRectGrid.rows + 1),
+                          })
+                        }
+                        className={`w-7 h-7 rounded-md flex items-center justify-center cursor-pointer transition-colors ${
+                          isDarkBg
+                            ? 'bg-neutral-800 hover:bg-neutral-700 text-neutral-200'
+                            : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                        }`}
+                      >
+                        <Plus className="w-3 h-3" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div
+                    className={`rounded-lg p-1.5 border ${
+                      isDarkBg
+                        ? 'border-neutral-700 bg-neutral-900/60'
+                        : 'border-slate-200 bg-white'
+                    }`}
+                  >
+                    <div className={`text-[10px] font-medium mb-1 text-center ${mutedText}`}>
+                      {t('gridCols')}
+                    </div>
+                    <div className="flex items-center justify-between gap-1">
+                      <button
+                        type="button"
+                        aria-label={`${t('gridCols')} -`}
+                        onClick={() =>
+                          applyRectGridUpdate({
+                            ...displayRectGrid,
+                            cols: Math.max(1, displayRectGrid.cols - 1),
+                          })
+                        }
+                        className={`w-7 h-7 rounded-md flex items-center justify-center cursor-pointer transition-colors ${
+                          isDarkBg
+                            ? 'bg-neutral-800 hover:bg-neutral-700 text-neutral-200'
+                            : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                        }`}
+                      >
+                        <Minus className="w-3 h-3" />
+                      </button>
+                      <span className="text-xs font-bold tabular-nums min-w-[22px] text-center">
+                        {displayRectGrid.cols}
+                      </span>
+                      <button
+                        type="button"
+                        aria-label={`${t('gridCols')} +`}
+                        onClick={() =>
+                          applyRectGridUpdate({
+                            ...displayRectGrid,
+                            cols: Math.min(24, displayRectGrid.cols + 1),
+                          })
+                        }
+                        className={`w-7 h-7 rounded-md flex items-center justify-center cursor-pointer transition-colors ${
+                          isDarkBg
+                            ? 'bg-neutral-800 hover:bg-neutral-700 text-neutral-200'
+                            : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                        }`}
+                      >
+                        <Plus className="w-3 h-3" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Expandable Sub-Buttons for Polygons & Diverse Stars */}
           {polygonsExpanded && (
@@ -422,6 +815,67 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
                       }`}
                     >
                       <PolygonMiniIcon variant={variant.id} className="w-4 h-4 shrink-0" />
+                      <span className="truncate max-w-full leading-tight">
+                        {t(variant.labelKey)}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Expandable Sub-Buttons for Arrow Styles */}
+          {arrowsExpanded && (
+            <div
+              className={`mt-2.5 p-2 rounded-xl border ${
+                isDarkBg
+                  ? 'border-neutral-700/80 bg-neutral-800/60'
+                  : 'border-slate-200/80 bg-slate-50/90'
+              }`}
+            >
+              <div className={`text-[10px] font-semibold uppercase tracking-wider mb-1.5 px-0.5 ${mutedText}`}>
+                {t('arrowStylesLabel')}
+              </div>
+              <div className="grid grid-cols-4 gap-1">
+                {ARROW_VARIANTS.map((variant) => {
+                  const selected =
+                    isEditingSelection && selectedInfo?.isArrowMorphable
+                      ? selectedInfo.arrowVariant === variant.id
+                      : activeMode === 'arrow' && arrowVariant === variant.id;
+                  return (
+                    <button
+                      key={variant.id}
+                      type="button"
+                      onClick={() => {
+                        const isBlockVariant =
+                          variant.id === 'filled' || variant.id === 'filledDouble';
+                        onSelectArrowVariant(variant.id);
+                        if (isBlockVariant && fill.mode === 'none' && !isEditingSelection) {
+                          onChangeFill({ ...fill, mode: 'solid' });
+                        } else if (!isBlockVariant && stroke.width === 0 && !isEditingSelection) {
+                          onChangeStroke({ ...stroke, width: 2 });
+                        }
+                        if (
+                          isEditingSelection &&
+                          selectedInfo?.isArrowMorphable &&
+                          onMorphSelectedArrow
+                        ) {
+                          onMorphSelectedArrow(variant.id);
+                        } else {
+                          onSelectMode('arrow');
+                        }
+                      }}
+                      title={t(variant.labelKey)}
+                      className={`min-h-[44px] px-1 py-1.5 rounded-lg flex flex-col items-center justify-center gap-1 text-[10px] font-medium transition-all cursor-pointer ${
+                        selected
+                          ? 'bg-blue-600 text-white shadow-sm'
+                          : isDarkBg
+                            ? 'bg-neutral-900/70 text-neutral-200 hover:bg-neutral-700'
+                            : 'bg-white text-slate-700 hover:bg-blue-50 border border-slate-200/60'
+                      }`}
+                    >
+                      <ArrowMiniIcon variant={variant.id} className="w-4 h-4 shrink-0" />
                       <span className="truncate max-w-full leading-tight">
                         {t(variant.labelKey)}
                       </span>

@@ -5,7 +5,11 @@ import {
   Copy,
   FlipHorizontal2,
   FlipVertical2,
+  Grid3X3,
+  Minus,
   Pencil,
+  Plus,
+  Square,
   Trash2,
   X,
 } from 'lucide-react';
@@ -16,6 +20,7 @@ import {
   FillSettings,
   HatchPattern,
   LinePattern,
+  RectGridConfig,
   SelectedObjectInfo,
 } from '../types/paint';
 
@@ -30,6 +35,7 @@ interface ObjectEditorPopoverProps {
     doubleLine?: boolean;
   }) => void;
   onUpdateFill: (next: FillSettings) => void;
+  onUpdateGrid?: (next: RectGridConfig) => void;
   onUpdateOpacity: (opacity: number) => void;
   onUpdateCornerRadius: (ratio: number) => void;
   onUpdateText: (patch: {
@@ -52,6 +58,7 @@ export const ObjectEditorPopover: React.FC<ObjectEditorPopoverProps> = ({
   info,
   onUpdateStroke,
   onUpdateFill,
+  onUpdateGrid,
   onUpdateOpacity,
   onUpdateCornerRadius,
   onUpdateText,
@@ -559,6 +566,151 @@ export const ObjectEditorPopover: React.FC<ObjectEditorPopoverProps> = ({
                       }
                       className="w-full h-2 rounded-lg accent-blue-600 cursor-pointer"
                     />
+                  </div>
+                </div>
+              )}
+            </div>
+          </>
+        )}
+
+        {/* Rectangle Grid Settings */}
+        {info.isRectEditable && onUpdateGrid && (
+          <>
+            <hr className={divider} />
+            <div className="space-y-2.5">
+              <div className={`text-xs font-medium ${mutedText}`}>{t('rectOptionsLabel')}</div>
+              <div className={`grid grid-cols-2 gap-1 p-1 rounded-xl ${subSurface}`}>
+                <button
+                  type="button"
+                  onClick={() =>
+                    onUpdateGrid({
+                      enabled: false,
+                      rows: info.gridRows ?? 3,
+                      cols: info.gridCols ?? 3,
+                    })
+                  }
+                  className={`min-h-[34px] px-2 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
+                    !info.isGridRect
+                      ? isDarkBg
+                        ? 'bg-neutral-900 text-white shadow-sm'
+                        : 'bg-white text-slate-900 shadow-sm'
+                      : isDarkBg
+                        ? 'text-neutral-300 hover:text-white'
+                        : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <Square className="w-3.5 h-3.5" />
+                  <span>{t('rectPlain')}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (info.strokeWidth === 0) {
+                      onUpdateStroke({ width: 1 });
+                    }
+                    onUpdateGrid({
+                      enabled: true,
+                      rows: Math.max(2, info.gridRows ?? 3),
+                      cols: Math.max(2, info.gridCols ?? 3),
+                    });
+                  }}
+                  className={`min-h-[34px] px-2 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
+                    info.isGridRect
+                      ? 'bg-blue-600 text-white shadow-sm'
+                      : isDarkBg
+                        ? 'text-neutral-300 hover:text-white'
+                        : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <Grid3X3 className="w-3.5 h-3.5" />
+                  <span>{t('rectGrid')}</span>
+                </button>
+              </div>
+              {info.isGridRect && (
+                <div className="grid grid-cols-2 gap-2">
+                  <div
+                    className={`rounded-lg p-1.5 border ${
+                      isDarkBg ? 'border-neutral-700 bg-neutral-800/60' : 'border-slate-200 bg-slate-50'
+                    }`}
+                  >
+                    <div className={`text-[10px] font-medium mb-1 text-center ${mutedText}`}>
+                      {t('gridRows')}
+                    </div>
+                    <div className="flex items-center justify-between gap-1">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onUpdateGrid({
+                            enabled: true,
+                            rows: Math.max(1, (info.gridRows ?? 3) - 1),
+                            cols: info.gridCols ?? 3,
+                          })
+                        }
+                        className={`w-7 h-7 rounded-md flex items-center justify-center cursor-pointer ${
+                          isDarkBg ? 'bg-neutral-900 hover:bg-neutral-700' : 'bg-white hover:bg-slate-100'
+                        }`}
+                      >
+                        <Minus className="w-3 h-3" />
+                      </button>
+                      <span className="text-xs font-bold tabular-nums">{info.gridRows ?? 3}</span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onUpdateGrid({
+                            enabled: true,
+                            rows: Math.min(24, (info.gridRows ?? 3) + 1),
+                            cols: info.gridCols ?? 3,
+                          })
+                        }
+                        className={`w-7 h-7 rounded-md flex items-center justify-center cursor-pointer ${
+                          isDarkBg ? 'bg-neutral-900 hover:bg-neutral-700' : 'bg-white hover:bg-slate-100'
+                        }`}
+                      >
+                        <Plus className="w-3 h-3" />
+                      </button>
+                    </div>
+                  </div>
+                  <div
+                    className={`rounded-lg p-1.5 border ${
+                      isDarkBg ? 'border-neutral-700 bg-neutral-800/60' : 'border-slate-200 bg-slate-50'
+                    }`}
+                  >
+                    <div className={`text-[10px] font-medium mb-1 text-center ${mutedText}`}>
+                      {t('gridCols')}
+                    </div>
+                    <div className="flex items-center justify-between gap-1">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onUpdateGrid({
+                            enabled: true,
+                            rows: info.gridRows ?? 3,
+                            cols: Math.max(1, (info.gridCols ?? 3) - 1),
+                          })
+                        }
+                        className={`w-7 h-7 rounded-md flex items-center justify-center cursor-pointer ${
+                          isDarkBg ? 'bg-neutral-900 hover:bg-neutral-700' : 'bg-white hover:bg-slate-100'
+                        }`}
+                      >
+                        <Minus className="w-3 h-3" />
+                      </button>
+                      <span className="text-xs font-bold tabular-nums">{info.gridCols ?? 3}</span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onUpdateGrid({
+                            enabled: true,
+                            rows: info.gridRows ?? 3,
+                            cols: Math.min(24, (info.gridCols ?? 3) + 1),
+                          })
+                        }
+                        className={`w-7 h-7 rounded-md flex items-center justify-center cursor-pointer ${
+                          isDarkBg ? 'bg-neutral-900 hover:bg-neutral-700' : 'bg-white hover:bg-slate-100'
+                        }`}
+                      >
+                        <Plus className="w-3 h-3" />
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}

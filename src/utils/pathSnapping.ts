@@ -41,6 +41,7 @@ export function isMergeableOpenLine(obj: any): boolean {
     obj.excludeFromExport ||
     obj.isEraserPath ||
     obj.isArrowGroup ||
+    obj.isArrowObject ||
     obj.isStampGroup ||
     obj.isSprayGroup
   ) {

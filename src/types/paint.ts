@@ -127,6 +127,22 @@ export type PolygonVariant =
   | 'cross'
   | 'tagArrow';
 
+export type ArrowVariant =
+  | 'single'
+  | 'double'
+  | 'filled'
+  | 'filledDouble'
+  | 'open'
+  | 'openDouble'
+  | 'circleTail'
+  | 'barTail';
+
+export interface RectGridConfig {
+  enabled: boolean;
+  rows: number;
+  cols: number;
+}
+
 export type SelectedObjectKind = 'shape' | 'closedShape' | 'line' | 'image' | 'text';
 
 export interface SelectedObjectInfo {
@@ -142,6 +158,12 @@ export interface SelectedObjectInfo {
   canToggleClosedContour?: boolean;
   isPolygonMorphable?: boolean;
   polygonVariant?: PolygonVariant;
+  isRectEditable?: boolean;
+  isGridRect?: boolean;
+  gridRows?: number;
+  gridCols?: number;
+  isArrowMorphable?: boolean;
+  arrowVariant?: ArrowVariant;
   selectionCount?: number;
   fill: FillSettings;
   opacity: number;
