@@ -1,0 +1,6 @@
+{
+  "name": "BestPaint",
+  "description": "Minimalist responsive drawing and sketching studio for desktop and mobile touch.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

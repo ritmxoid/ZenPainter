@@ -1,0 +1,245 @@
+import React, { useRef } from 'react';
+import {
+  Eraser,
+  Eye,
+  EyeOff,
+  ImagePlus,
+  MoreVertical,
+  Redo2,
+  Shapes,
+  Stamp,
+  Type,
+  Undo2,
+} from 'lucide-react';
+import { TranslationKey } from '../i18n/translations';
+import { ActivePopover, DrawMode } from '../types/paint';
+
+interface RightSidebarProps {
+  t: (key: TranslationKey) => string;
+  isOpen: boolean;
+  onToggleOpen: () => void;
+  activePopover: ActivePopover;
+  onTogglePopover: (pop: ActivePopover) => void;
+  activeMode: DrawMode;
+  onActivateEraser: () => void;
+  onTriggerImageUpload: () => void;
+  onUndo: () => void;
+  onRedo: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
+  isDarkBg: boolean;
+}
+
+export const RightSidebar: React.FC<RightSidebarProps> = ({
+  t,
+  isOpen,
+  onToggleOpen,
+  activePopover,
+  onTogglePopover,
+  activeMode,
+  onActivateEraser,
+  onTriggerImageUpload,
+  onUndo,
+  onRedo,
+  canUndo,
+  canRedo,
+  isDarkBg,
+}) => {
+  const longPressTimerRef = useRef<number | null>(null);
+  const longPressedRef = useRef(false);
+
+  const handleUndoPointerDown = () => {
+    longPressedRef.current = false;
+    if (longPressTimerRef.current) {
+      window.clearTimeout(longPressTimerRef.current);
+    }
+    longPressTimerRef.current = window.setTimeout(() => {
+      longPressedRef.current = true;
+      if (canRedo) {
+        onRedo();
+      }
+    }, 450);
+  };
+
+  const handleUndoPointerUp = () => {
+    if (longPressTimerRef.current) {
+      window.clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  };
+
+  const handleUndoClick = () => {
+    if (longPressedRef.current) {
+      longPressedRef.current = false;
+      return;
+    }
+    if (canUndo) {
+      onUndo();
+    }
+  };
+
+  const isShapesToolActive = activeMode !== 'eraser';
+
+  const eyeClass = isDarkBg
+    ? 'bg-neutral-800/75 hover:bg-neutral-800 text-neutral-200 border-neutral-700/80 shadow-lg shadow-black/30'
+    : 'bg-white/75 hover:bg-white text-slate-600 hover:text-slate-900 border-slate-200/80 shadow-md shadow-slate-900/5';
+
+  const barSurface = isDarkBg
+    ? 'bg-neutral-900/90 border-neutral-700/80 shadow-2xl shadow-black/50'
+    : 'bg-white/92 border-slate-200/90 shadow-xl shadow-slate-900/10';
+
+  const btnBase = isDarkBg
+    ? 'text-neutral-300 hover:bg-neutral-800 hover:text-white'
+    : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900';
+
+  const btnActive = 'bg-blue-600 text-white hover:bg-blue-700 hover:text-white shadow-sm';
+
+  return (
+    <>
+      {/* 36x36px Floating Eye Trigger in top-right (16px margin) */}
+      <button
+        type="button"
+        onClick={onToggleOpen}
+        onPointerDown={(e) => e.stopPropagation()}
+        onTouchStart={(e) => e.stopPropagation()}
+        aria-label={t('toggleMenu')}
+        title={t('toggleMenu')}
+        className={`fixed top-4 right-4 z-50 w-9 h-9 rounded-xl border backdrop-blur-md flex items-center justify-center transition-all duration-150 cursor-pointer after:content-[''] after:absolute after:-inset-1.5 ${
+          isOpen
+            ? isDarkBg
+              ? 'bg-neutral-800 text-white border-neutral-600'
+              : 'bg-white text-slate-900 border-slate-300'
+            : eyeClass
+        }`}
+      >
+        {isOpen ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+      </button>
+
+      {/* Compact Vertical Right Sidebar (7 Icon Buttons) */}
+      <aside
+        aria-hidden={!isOpen}
+        onPointerDown={(e) => e.stopPropagation()}
+        onTouchStart={(e) => e.stopPropagation()}
+        className={`fixed top-[62px] right-3 sm:right-3.5 z-40 max-h-[calc(100dvh-78px)] overflow-y-auto bp-scroll rounded-2xl border backdrop-blur-md p-1.5 flex flex-col items-center gap-1 transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] ${barSurface} ${
+          isOpen
+            ? 'translate-x-0 opacity-100 pointer-events-auto'
+            : 'translate-x-[calc(100%+24px)] opacity-0 pointer-events-none'
+        }`}
+      >
+        {/* 1. Lines & Shapes */}
+        <button
+          type="button"
+          onClick={() => onTogglePopover('shapes')}
+          title={t('toolShapes')}
+          aria-label={t('toolShapes')}
+          className={`w-11 h-11 rounded-xl flex items-center justify-center transition-colors cursor-pointer ${
+            activePopover === 'shapes' || (isShapesToolActive && activePopover === null)
+              ? btnActive
+              : btnBase
+          }`}
+        >
+          <Shapes className="w-5 h-5" />
+        </button>
+
+        {/* 2. Text Tool */}
+        <button
+          type="button"
+          onClick={() => onTogglePopover('text')}
+          title={t('toolText')}
+          aria-label={t('toolText')}
+          className={`w-11 h-11 rounded-xl flex items-center justify-center transition-colors cursor-pointer shrink-0 ${
+            activePopover === 'text' ? btnActive : btnBase
+          }`}
+        >
+          <Type className="w-5 h-5" />
+        </button>
+
+        {/* 3. UI Wireframing Icons / Stamps */}
+        <button
+          type="button"
+          onClick={() => onTogglePopover('stamps')}
+          title={t('toolStamps')}
+          aria-label={t('toolStamps')}
+          className={`w-11 h-11 rounded-xl flex items-center justify-center transition-colors cursor-pointer shrink-0 ${
+            activePopover === 'stamps' ? btnActive : btnBase
+          }`}
+        >
+          <Stamp className="w-5 h-5" />
+        </button>
+
+        {/* 4. Image Upload */}
+        <button
+          type="button"
+          onClick={onTriggerImageUpload}
+          title={t('toolImage')}
+          aria-label={t('toolImage')}
+          className={`w-11 h-11 rounded-xl flex items-center justify-center transition-colors cursor-pointer shrink-0 ${btnBase}`}
+        >
+          <ImagePlus className="w-5 h-5" />
+        </button>
+
+        {/* 4. Eraser */}
+        <button
+          type="button"
+          onClick={onActivateEraser}
+          title={t('toolEraser')}
+          aria-label={t('toolEraser')}
+          className={`w-11 h-11 rounded-xl flex items-center justify-center transition-colors cursor-pointer ${
+            activePopover === 'eraser' || activeMode === 'eraser' ? btnActive : btnBase
+          }`}
+        >
+          <Eraser className="w-5 h-5" />
+        </button>
+
+        {/* 5. Undo (tap / long-press redo) + Small Secondary Redo */}
+        <div className="w-11 flex flex-col items-center gap-0.5 pt-0.5 pb-0.5">
+          <button
+            type="button"
+            onPointerDown={handleUndoPointerDown}
+            onPointerUp={handleUndoPointerUp}
+            onPointerLeave={handleUndoPointerUp}
+            onPointerCancel={handleUndoPointerUp}
+            onClick={handleUndoClick}
+            disabled={!canUndo}
+            title={t('toolUndo')}
+            aria-label={t('toolUndo')}
+            className={`w-11 h-9 rounded-xl flex items-center justify-center transition-colors ${
+              canUndo
+                ? `${btnBase} cursor-pointer`
+                : 'opacity-30 cursor-not-allowed'
+            }`}
+          >
+            <Undo2 className="w-5 h-5" />
+          </button>
+          <button
+            type="button"
+            onClick={onRedo}
+            disabled={!canRedo}
+            title={t('toolRedo')}
+            aria-label={t('toolRedo')}
+            className={`w-9 h-6 rounded-lg flex items-center justify-center transition-colors ${
+              canRedo
+                ? `${btnBase} cursor-pointer`
+                : 'opacity-25 cursor-not-allowed'
+            }`}
+          >
+            <Redo2 className="w-3.5 h-3.5" />
+          </button>
+        </div>
+
+        {/* 6. Canvas Actions */}
+        <button
+          type="button"
+          onClick={() => onTogglePopover('actions')}
+          title={t('toolActions')}
+          aria-label={t('toolActions')}
+          className={`w-11 h-11 rounded-xl flex items-center justify-center transition-colors cursor-pointer ${
+            activePopover === 'actions' ? btnActive : btnBase
+          }`}
+        >
+          <MoreVertical className="w-5 h-5" />
+        </button>
+      </aside>
+    </>
+  );
+};
