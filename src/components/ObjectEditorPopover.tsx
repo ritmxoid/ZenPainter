@@ -6,6 +6,7 @@ import {
   FlipHorizontal2,
   FlipVertical2,
   Grid3X3,
+  Image as ImageIcon,
   Minus,
   Pencil,
   Plus,
@@ -23,6 +24,7 @@ import {
   RectGridConfig,
   SelectedObjectInfo,
 } from '../types/paint';
+import { downscaleImageFileToDataUrl } from '../utils/canvasHelpers';
 
 interface ObjectEditorPopoverProps {
   t: (key: TranslationKey) => string;
@@ -74,6 +76,7 @@ export const ObjectEditorPopover: React.FC<ObjectEditorPopoverProps> = ({
   const patternLongPressTimerRef = useRef<number | null>(null);
   const patternLongPressTriggeredRef = useRef(false);
   const patternPressStartRef = useRef<{ x: number; y: number } | null>(null);
+  const fillPhotoInputRef = useRef<HTMLInputElement | null>(null);
 
   const clearPatternLongPress = () => {
     if (patternLongPressTimerRef.current !== null) {
@@ -94,6 +97,7 @@ export const ObjectEditorPopover: React.FC<ObjectEditorPopoverProps> = ({
     { id: 'none', labelKey: 'fillNone' },
     { id: 'solid', labelKey: 'fillSolid' },
     { id: 'pattern', labelKey: 'fillPattern' },
+    { id: 'photo', labelKey: 'fillPhoto' },
   ];
 
   const hatchOptions: Array<{ id: HatchPattern; labelKey: TranslationKey }> = [
@@ -454,15 +458,21 @@ export const ObjectEditorPopover: React.FC<ObjectEditorPopoverProps> = ({
             <hr className={divider} />
             <div className="space-y-3">
               <div className={`text-xs font-medium ${mutedText}`}>{t('sectionFill')}</div>
-              <div className={`grid grid-cols-3 gap-1 p-1 rounded-xl ${subSurface}`}>
+              <div className={`grid grid-cols-4 gap-1 p-1 rounded-xl ${subSurface}`}>
                 {fillModes.map((fm) => {
                   const active = info.fill.mode === fm.id;
                   return (
                     <button
                       key={fm.id}
                       type="button"
-                      onClick={() => onUpdateFill({ ...info.fill, mode: fm.id })}
-                      className={`min-h-[36px] px-2 rounded-lg text-xs font-medium transition-colors cursor-pointer truncate ${
+                      onClick={() => {
+                        if (fm.id === 'photo' && !info.fill.photoDataUrl) {
+                          fillPhotoInputRef.current?.click();
+                          return;
+                        }
+                        onUpdateFill({ ...info.fill, mode: fm.id });
+                      }}
+                      className={`min-h-[36px] px-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer truncate ${
                         active
                           ? isDarkBg
                             ? 'bg-neutral-900 text-white shadow-sm'
@@ -477,6 +487,25 @@ export const ObjectEditorPopover: React.FC<ObjectEditorPopoverProps> = ({
                   );
                 })}
               </div>
+
+              <input
+                ref={fillPhotoInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = '';
+                  if (!file) return;
+                  void downscaleImageFileToDataUrl(file).then((photoDataUrl) => {
+                    onUpdateFill({
+                      ...info.fill,
+                      mode: 'photo',
+                      photoDataUrl,
+                    });
+                  });
+                }}
+                className="hidden"
+              />
 
               {info.fill.mode !== 'none' && (
                 <div className="space-y-3 pt-1">
@@ -506,43 +535,81 @@ export const ObjectEditorPopover: React.FC<ObjectEditorPopoverProps> = ({
                     </div>
                   )}
 
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <label
-                      className={`relative w-8 h-8 rounded-lg border overflow-hidden cursor-pointer shrink-0 ${
-                        isDarkBg ? 'border-neutral-600' : 'border-slate-300'
+                  {info.fill.mode === 'photo' && (
+                    <div
+                      className={`p-2 rounded-xl border flex items-center gap-2.5 ${
+                        isDarkBg
+                          ? 'border-neutral-700 bg-neutral-800/60'
+                          : 'border-slate-200 bg-slate-50'
                       }`}
                     >
-                      <input
-                        type="color"
-                        value={info.fill.color}
-                        onChange={(e) =>
-                          onUpdateFill({ ...info.fill, color: e.target.value })
-                        }
-                        className="absolute inset-0 w-[150%] h-[150%] -top-1/4 -left-1/4 cursor-pointer border-0 p-0"
-                      />
-                    </label>
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      {QUICK_COLOR_SWATCHES.map((hex) => (
-                        <button
-                          key={hex}
-                          type="button"
-                          onClick={() => onUpdateFill({ ...info.fill, color: hex })}
-                          className={`w-6 h-6 rounded-full border transition-transform cursor-pointer ${
-                            info.fill.color.toLowerCase() === hex.toLowerCase()
-                              ? 'ring-2 ring-blue-500 ring-offset-1 scale-110'
-                              : 'hover:scale-105'
-                          } ${
-                            hex === '#FFFFFF'
-                              ? 'border-slate-300'
-                              : isDarkBg
-                                ? 'border-neutral-600'
-                                : 'border-black/15'
-                          }`}
-                          style={{ backgroundColor: hex }}
+                      {info.fill.photoDataUrl ? (
+                        <img
+                          src={info.fill.photoDataUrl}
+                          alt=""
+                          className="w-10 h-10 rounded-lg object-cover border border-black/10 shrink-0"
                         />
-                      ))}
+                      ) : (
+                        <div
+                          className={`w-10 h-10 rounded-lg border flex items-center justify-center shrink-0 ${
+                            isDarkBg
+                              ? 'border-neutral-700 bg-neutral-900'
+                              : 'border-slate-200 bg-white'
+                          }`}
+                        >
+                          <ImageIcon className={`w-4 h-4 ${mutedText}`} />
+                        </div>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => fillPhotoInputRef.current?.click()}
+                        className="flex-1 min-h-[36px] px-3 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
+                      >
+                        <ImageIcon className="w-3.5 h-3.5 shrink-0" />
+                        <span className="truncate">{t('fillPhotoPick')}</span>
+                      </button>
                     </div>
-                  </div>
+                  )}
+
+                  {info.fill.mode !== 'photo' && (
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <label
+                        className={`relative w-8 h-8 rounded-lg border overflow-hidden cursor-pointer shrink-0 ${
+                          isDarkBg ? 'border-neutral-600' : 'border-slate-300'
+                        }`}
+                      >
+                        <input
+                          type="color"
+                          value={info.fill.color}
+                          onChange={(e) =>
+                            onUpdateFill({ ...info.fill, color: e.target.value })
+                          }
+                          className="absolute inset-0 w-[150%] h-[150%] -top-1/4 -left-1/4 cursor-pointer border-0 p-0"
+                        />
+                      </label>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {QUICK_COLOR_SWATCHES.map((hex) => (
+                          <button
+                            key={hex}
+                            type="button"
+                            onClick={() => onUpdateFill({ ...info.fill, color: hex })}
+                            className={`w-6 h-6 rounded-full border transition-transform cursor-pointer ${
+                              info.fill.color.toLowerCase() === hex.toLowerCase()
+                                ? 'ring-2 ring-blue-500 ring-offset-1 scale-110'
+                                : 'hover:scale-105'
+                            } ${
+                              hex === '#FFFFFF'
+                                ? 'border-slate-300'
+                                : isDarkBg
+                                  ? 'border-neutral-600'
+                                  : 'border-black/15'
+                            }`}
+                            style={{ backgroundColor: hex }}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
                   <div>
                     <div className="flex items-center justify-between mb-1">

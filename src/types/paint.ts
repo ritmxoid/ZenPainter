@@ -14,7 +14,7 @@ export type LinePattern = 'solid' | 'dashed' | 'dotted' | 'dashdot';
 
 export type BrushType = 'standard' | 'soft' | 'spray';
 
-export type FillMode = 'none' | 'solid' | 'pattern';
+export type FillMode = 'none' | 'solid' | 'pattern' | 'photo';
 
 export type HatchPattern = 'diagonal' | 'crosshatch' | 'dots' | 'horizontal';
 
@@ -104,6 +104,7 @@ export interface FillSettings {
   color: string;
   opacity: number;
   hatchPattern: HatchPattern;
+  photoDataUrl?: string;
 }
 
 export type FontCategory = 'sans' | 'serif' | 'handwritten' | 'display';

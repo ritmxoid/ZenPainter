@@ -1,5 +1,10 @@
 import { FillSettings } from '../types/paint';
-import { applyColorOpacity, buildFillValue, getFabric } from './canvasHelpers';
+import {
+  applyColorOpacity,
+  applyFillToObject,
+  buildFillValue,
+  getFabric,
+} from './canvasHelpers';
 
 export interface Point2D {
   x: number;
@@ -381,6 +386,9 @@ export function buildFabricPathFromWorldSegments(
     borderColor: '#2563EB',
   });
 
+  if (closed && fillSettings.mode === 'photo') {
+    applyFillToObject(pathObj, fillSettings);
+  }
   pathObj.setCoords();
   return pathObj;
 }

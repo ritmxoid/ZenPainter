@@ -64,6 +64,7 @@ export interface HelpTranslationBundle {
   shortcutBezier: string;
   shortcutLayers: string;
   shortcutSteps: string;
+  dontShowAgain: string;
 }
 
 const en: HelpTranslationBundle = {
@@ -175,6 +176,7 @@ const en: HelpTranslationBundle = {
   shortcutBezier: 'Bezier',
   shortcutLayers: 'Layers',
   shortcutSteps: '30 steps',
+  dontShowAgain: "Don't show again",
 };
 
 const ru: HelpTranslationBundle = {
@@ -286,6 +288,7 @@ const ru: HelpTranslationBundle = {
   shortcutBezier: 'Безье',
   shortcutLayers: 'Слои',
   shortcutSteps: '30 шагов',
+  dontShowAgain: "Больше не показывать",
 };
 
 const uk: HelpTranslationBundle = {
@@ -397,6 +400,7 @@ const uk: HelpTranslationBundle = {
   shortcutBezier: 'Безьє',
   shortcutLayers: 'Шари',
   shortcutSteps: '30 кроків',
+  dontShowAgain: "Більше не показувати",
 };
 
 const be: HelpTranslationBundle = {
@@ -508,6 +512,7 @@ const be: HelpTranslationBundle = {
   shortcutBezier: 'Безье',
   shortcutLayers: 'Слаі',
   shortcutSteps: '30 крокаў',
+  dontShowAgain: "Больш не паказваць",
 };
 
 const kk: HelpTranslationBundle = {
@@ -619,6 +624,7 @@ const kk: HelpTranslationBundle = {
   shortcutBezier: 'Безье',
   shortcutLayers: 'Қабаттар',
   shortcutSteps: '30 қадам',
+  dontShowAgain: "Енді көрсетпеу",
 };
 
 const es: HelpTranslationBundle = {
@@ -730,6 +736,7 @@ const es: HelpTranslationBundle = {
   shortcutBezier: 'Bézier',
   shortcutLayers: 'Capas',
   shortcutSteps: '30 pasos',
+  dontShowAgain: "No volver a mostrar",
 };
 
 const pt: HelpTranslationBundle = {
@@ -841,6 +848,7 @@ const pt: HelpTranslationBundle = {
   shortcutBezier: 'Bézier',
   shortcutLayers: 'Camadas',
   shortcutSteps: '30 passos',
+  dontShowAgain: "Não mostrar novamente",
 };
 
 const fr: HelpTranslationBundle = {
@@ -952,6 +960,7 @@ const fr: HelpTranslationBundle = {
   shortcutBezier: 'Bézier',
   shortcutLayers: 'Calques',
   shortcutSteps: '30 étapes',
+  dontShowAgain: "Ne plus afficher",
 };
 
 const de: HelpTranslationBundle = {
@@ -1063,6 +1072,7 @@ const de: HelpTranslationBundle = {
   shortcutBezier: 'Bézier',
   shortcutLayers: 'Ebenen',
   shortcutSteps: '30 Schritte',
+  dontShowAgain: "Nicht mehr anzeigen",
 };
 
 const it: HelpTranslationBundle = {
@@ -1174,6 +1184,7 @@ const it: HelpTranslationBundle = {
   shortcutBezier: 'Bézier',
   shortcutLayers: 'Livelli',
   shortcutSteps: '30 passi',
+  dontShowAgain: "Non mostrare più",
 };
 
 const pl: HelpTranslationBundle = {
@@ -1285,6 +1296,7 @@ const pl: HelpTranslationBundle = {
   shortcutBezier: 'Bézier',
   shortcutLayers: 'Warstwy',
   shortcutSteps: '30 kroków',
+  dontShowAgain: "Nie pokazuj ponownie",
 };
 
 const nl: HelpTranslationBundle = {
@@ -1396,6 +1408,7 @@ const nl: HelpTranslationBundle = {
   shortcutBezier: 'Bézier',
   shortcutLayers: 'Lagen',
   shortcutSteps: '30 stappen',
+  dontShowAgain: "Niet meer tonen",
 };
 
 const tr: HelpTranslationBundle = {
@@ -1507,6 +1520,7 @@ const tr: HelpTranslationBundle = {
   shortcutBezier: 'Bézier',
   shortcutLayers: 'Katmanlar',
   shortcutSteps: '30 adım',
+  dontShowAgain: "Bir daha gösterme",
 };
 
 const ar: HelpTranslationBundle = {
@@ -1618,6 +1632,7 @@ const ar: HelpTranslationBundle = {
   shortcutBezier: 'بيزييه',
   shortcutLayers: 'الطبقات',
   shortcutSteps: '30 خطوة',
+  dontShowAgain: "عدم الإظهار مجدداً",
 };
 
 const hi: HelpTranslationBundle = {
@@ -1729,6 +1744,7 @@ const hi: HelpTranslationBundle = {
   shortcutBezier: 'बेज़ियर',
   shortcutLayers: 'लेयर्स',
   shortcutSteps: '30 चरण',
+  dontShowAgain: "फिर से न दिखाएं",
 };
 
 const zh: HelpTranslationBundle = {
@@ -1840,6 +1856,7 @@ const zh: HelpTranslationBundle = {
   shortcutBezier: '贝塞尔',
   shortcutLayers: '图层',
   shortcutSteps: '30 步历史',
+  dontShowAgain: "不再显示",
 };
 
 const ja: HelpTranslationBundle = {
@@ -1951,6 +1968,7 @@ const ja: HelpTranslationBundle = {
   shortcutBezier: 'ベジェ',
   shortcutLayers: 'レイヤー',
   shortcutSteps: '30ステップ',
+  dontShowAgain: "今後表示しない",
 };
 
 const ko: HelpTranslationBundle = {
@@ -2062,6 +2080,7 @@ const ko: HelpTranslationBundle = {
   shortcutBezier: '베지어',
   shortcutLayers: '레이어',
   shortcutSteps: '30단계',
+  dontShowAgain: "다시 보지 않기",
 };
 
 const vi: HelpTranslationBundle = {
@@ -2173,6 +2192,7 @@ const vi: HelpTranslationBundle = {
   shortcutBezier: 'Bézier',
   shortcutLayers: 'Các lớp',
   shortcutSteps: '30 bước',
+  dontShowAgain: "Không hiển thị lại",
 };
 
 const id: HelpTranslationBundle = {
@@ -2284,6 +2304,7 @@ const id: HelpTranslationBundle = {
   shortcutBezier: 'Bezier',
   shortcutLayers: 'Lapisan',
   shortcutSteps: '30 langkah',
+  dontShowAgain: "Jangan tampilkan lagi",
 };
 
 const th: HelpTranslationBundle = {
@@ -2395,6 +2416,7 @@ const th: HelpTranslationBundle = {
   shortcutBezier: 'เบซิเยร์',
   shortcutLayers: 'เลเยอร์',
   shortcutSteps: '30 ขั้น',
+  dontShowAgain: "ไม่ต้องแสดงอีก",
 };
 
 export const HELP_TRANSLATIONS: Record<SupportedLanguage, HelpTranslationBundle> = {

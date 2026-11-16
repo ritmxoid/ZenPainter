@@ -38,6 +38,7 @@ import {
 import {
   applyColorOpacity,
   applyCornerRoundingToObject,
+  applyFillToObject,
   buildFillValue,
   buildPolygonPoints,
   createArrowObject,
@@ -47,11 +48,14 @@ import {
   getObjectCornerRoundRatio,
   getObjectScreenRect,
   getScaledDashArray,
+  hasFillableStampParts,
   installDoubleLineStrokeHook,
   isBackgroundDark,
   isObjectCornerRoundable,
   parseColorAndOpacity,
+  refreshObjectPhotoFill,
 } from './utils/canvasHelpers';
+import { APP_BUILD_ID, APP_VERSION, HIDE_TUTORIAL_STORAGE_KEY } from './version';
 import {
   attachEndpointControls,
   buildFabricPathFromWorldSegments,
@@ -138,8 +142,11 @@ function getEditableTargets(activeObj: any): any[] {
 }
 
 function isClosedFillableObject(obj: any): boolean {
-  if (!obj || obj.excludeFromExport || obj.isEraserPath || obj.isArrowGroup || obj.isStampGroup || obj.isSprayGroup) {
+  if (!obj || obj.excludeFromExport || obj.isEraserPath || obj.isArrowGroup || obj.isSprayGroup) {
     return false;
+  }
+  if (obj.isStampGroup) {
+    return hasFillableStampParts(obj);
   }
   return (
     obj.type === 'rect' ||
@@ -378,10 +385,35 @@ export default function App() {
     percent: number;
     armed: boolean;
   } | null>(null);
-  const [helpOpen, setHelpOpen] = useState(false);
+  const [dontShowTutorialAgain, setDontShowTutorialAgain] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      return window.localStorage.getItem(HIDE_TUTORIAL_STORAGE_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+  const [helpOpen, setHelpOpen] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      return window.localStorage.getItem(HIDE_TUTORIAL_STORAGE_KEY) !== '1';
+    } catch {
+      return true;
+    }
+  });
+  const [helpInitialFullscreen, setHelpInitialFullscreen] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      return window.localStorage.getItem(HIDE_TUTORIAL_STORAGE_KEY) !== '1';
+    } catch {
+      return true;
+    }
+  });
   const [offlineToast, setOfflineToast] = useState(false);
   const offlineToastTimerRef = useRef<number | null>(null);
   const offlineHtmlBlobRef = useRef<Blob | null>(null);
+  const [selectAllToast, setSelectAllToast] = useState(false);
+  const selectAllToastTimerRef = useRef<number | null>(null);
 
   // Brush / Shape / Eraser settings
   const [stroke, setStroke] = useState<StrokeSettings>({
@@ -826,13 +858,11 @@ export default function App() {
           if (!isClosed) {
             attachControlsToObject(created);
           }
-          setActiveMode('select');
-          activeModeRef.current = 'select';
+          fc.discardActiveObject();
           syncFabricToolState();
-          created.set({ selectable: true, evented: true });
           created.setCoords();
-          fc.setActiveObject(created);
-          refreshSelectedInfo();
+          setSelectedInfo(null);
+          refreshEmptyState();
           saveHistory();
         }
       } else {
@@ -911,14 +941,12 @@ export default function App() {
             }
           }
         }
-        setActiveMode('select');
-        activeModeRef.current = 'select';
+        fc.discardActiveObject();
         syncFabricToolState();
         attachControlsToObject(createdPath);
-        createdPath.set({ selectable: true, evented: true });
         createdPath.setCoords();
-        fc.setActiveObject(createdPath);
-        refreshSelectedInfo();
+        setSelectedInfo(null);
+        refreshEmptyState();
         saveHistory();
       } else {
         syncFabricToolState();
@@ -961,7 +989,9 @@ export default function App() {
               dirty: true,
             });
           }
-          if (
+          if (obj.fillMeta?.mode === 'photo' && obj.fillMeta.photoDataUrl) {
+            refreshObjectPhotoFill(obj, fc);
+          } else if (
             obj.fill &&
             obj.fill.source &&
             obj.fill.source instanceof HTMLImageElement &&
@@ -1162,6 +1192,9 @@ export default function App() {
       ) {
         applyCornerRoundingToObject(e.target, e.target.cornerRoundRatio);
       }
+      if (e?.target?.fillMeta?.mode === 'photo') {
+        refreshObjectPhotoFill(e.target, fc);
+      }
       updateSel();
     });
     fc.on('object:rotating', updateSel);
@@ -1328,6 +1361,9 @@ export default function App() {
         e.target.cornerRoundRatio > 0
       ) {
         applyCornerRoundingToObject(e.target, e.target.cornerRoundRatio);
+      }
+      if (e?.target?.fillMeta?.mode === 'photo') {
+        refreshObjectPhotoFill(e.target, fc);
       }
       if (e?.target) {
         attachControlsToObject(e.target);
@@ -1862,8 +1898,14 @@ export default function App() {
         }
       } else if (mode === 'rect' || mode === 'triangle') {
         shape.set({ left, top, width, height });
+        if (fillRef.current.mode === 'photo') {
+          applyFillToObject(shape, fillRef.current, fc);
+        }
       } else if (mode === 'ellipse') {
         shape.set({ left, top, rx: width / 2, ry: height / 2 });
+        if (fillRef.current.mode === 'photo') {
+          applyFillToObject(shape, fillRef.current, fc);
+        }
       } else if (mode === 'star') {
         const cx = left + width / 2;
         const cy = top + height / 2;
@@ -1896,6 +1938,9 @@ export default function App() {
             evented: false,
           }
         );
+        if (fillRef.current.mode === 'photo') {
+          applyFillToObject(nextPoly, fillRef.current, fc);
+        }
         tempShapeRef.current = nextPoly;
         fc.add(nextPoly);
       } else if (mode === 'arrow') {
@@ -2351,16 +2396,17 @@ export default function App() {
         finalShape.set({ cornerRoundRatio: 0 });
       }
 
-      // Immediately make newly drawn shape/line/arrow selectable with bounding box handles!
-      setActiveMode('select');
-      activeModeRef.current = 'select';
-      syncFabricToolState();
+      if (finalShape.fillMeta?.mode === 'photo') {
+        applyFillToObject(finalShape, finalShape.fillMeta, fc);
+      }
+
+      // Keep active drawing tool selected so users can draw multiple shapes/lines in sequence
       attachControlsToObject(finalShape);
-      finalShape.set({ selectable: true, evented: true });
+      syncFabricToolState();
       finalShape.setCoords();
-      fc.setActiveObject(finalShape);
       fc.requestRenderAll();
-      refreshSelectedInfo();
+      setSelectedInfo(null);
+      refreshEmptyState();
       saveHistory();
     });
 
@@ -2450,6 +2496,10 @@ export default function App() {
             evented: false,
           }
         );
+
+        if (isClosedBez && fillRef.current.mode === 'photo') {
+          applyFillToObject(nextPath, fillRef.current, fc);
+        }
 
         const idx = fc.getObjects().indexOf(oldPath);
         fc.remove(oldPath);
@@ -2893,6 +2943,85 @@ export default function App() {
     });
   }, [ensureOfflineBlob, showOfflineSavedToast]);
 
+  // Automatic version/build checker for deployed updates
+  useEffect(() => {
+    if (typeof window === 'undefined' || window.location.protocol === 'file:') {
+      return;
+    }
+
+    let cancelled = false;
+    const checkForUpdate = async () => {
+      if (cancelled || navigator.onLine === false) return;
+      try {
+        const res = await fetch(`./version.json?t=${Date.now()}`, {
+          cache: 'no-store',
+        });
+        if (!res.ok) return;
+        const remote = (await res.json()) as { version?: string; buildId?: string };
+        const remoteBuildKey = remote.buildId || remote.version;
+        if (!remoteBuildKey) return;
+
+        const changed =
+          (remote.version && remote.version !== APP_VERSION) ||
+          (remote.buildId && remote.buildId !== APP_BUILD_ID);
+
+        if (changed) {
+          const alreadyReloaded = window.sessionStorage.getItem('zp_reloaded_build');
+          if (alreadyReloaded === remoteBuildKey) return;
+          window.sessionStorage.setItem('zp_reloaded_build', remoteBuildKey);
+
+          if ('caches' in window && typeof window.caches.keys === 'function') {
+            const keys = await window.caches.keys();
+            await Promise.all(keys.map((k) => window.caches.delete(k)));
+          }
+          window.location.reload();
+        }
+      } catch {
+        // Offline or transient fetch failure
+      }
+    };
+
+    const initialTimer = window.setTimeout(() => {
+      void checkForUpdate();
+    }, 1500);
+    const intervalId = window.setInterval(() => {
+      void checkForUpdate();
+    }, 60000);
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        void checkForUpdate();
+      }
+    };
+    const handleOnline = () => {
+      void checkForUpdate();
+    };
+
+    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('online', handleOnline);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(initialTimer);
+      window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('online', handleOnline);
+    };
+  }, []);
+
+  const handleToggleDontShowTutorial = useCallback((next: boolean) => {
+    setDontShowTutorialAgain(next);
+    if (typeof window === 'undefined') return;
+    try {
+      if (next) {
+        window.localStorage.setItem(HIDE_TUTORIAL_STORAGE_KEY, '1');
+      } else {
+        window.localStorage.removeItem(HIDE_TUTORIAL_STORAGE_KEY);
+      }
+    } catch {
+      // ignore storage errors
+    }
+  }, []);
+
   const handleSelectMode = (mode: DrawMode) => {
     if (bezierSessionRef.current && mode !== 'bezier') {
       finalizeBezierSession(false);
@@ -2905,6 +3034,60 @@ export default function App() {
     }
     setActiveMode(mode);
   };
+
+  const handleSelectAll = useCallback(() => {
+    const fc = fabricCanvasRef.current;
+    const fabric = getFabric();
+    if (!fc || !fabric) return;
+
+    if (bezierSessionRef.current) {
+      finalizeBezierSession(false);
+    }
+    if (contourSessionRef.current) {
+      finalizeContourSession(false);
+    }
+
+    setObjectEditorOpen(false);
+    setActivePopover(null);
+    setActiveMode('select');
+    activeModeRef.current = 'select';
+    syncFabricToolState();
+
+    const targets = fc
+      .getObjects()
+      .filter((o: any) => o && !o.excludeFromExport && !o.isEraserPath);
+
+    if (targets.length === 0) {
+      fc.discardActiveObject();
+      fc.requestRenderAll();
+      refreshSelectedInfo();
+      return;
+    }
+
+    targets.forEach((o: any) => {
+      o.set({ selectable: true, evented: true });
+      o.setCoords();
+    });
+
+    if (targets.length === 1) {
+      fc.setActiveObject(targets[0]);
+    } else {
+      const sel = new fabric.ActiveSelection(targets, { canvas: fc });
+      fc.setActiveObject(sel);
+    }
+
+    fc.requestRenderAll();
+    refreshSelectedInfo();
+
+    setSelectAllToast(true);
+    if (selectAllToastTimerRef.current) {
+      window.clearTimeout(selectAllToastTimerRef.current);
+    }
+    selectAllToastTimerRef.current = window.setTimeout(() => {
+      setSelectAllToast(false);
+      selectAllToastTimerRef.current = null;
+    }, 1800);
+  }, [finalizeBezierSession, finalizeContourSession, refreshSelectedInfo, syncFabricToolState]);
 
   const handleActivateEraser = () => {
     if (bezierSessionRef.current) {
@@ -3247,12 +3430,19 @@ export default function App() {
           dirty: true,
         });
       } else if (obj.isStampGroup) {
+        const allowZeroStamp =
+          isClosedFillableObject(obj) &&
+          obj.fillMeta?.mode !== 'none';
+        const stampStrokeWidth = allowZeroStamp
+          ? nextWidth
+          : Math.max(1, nextWidth);
+        const stampDash = getScaledDashArray(nextPattern, stampStrokeWidth);
         const items = Array.isArray(obj._objects) ? obj._objects : [obj];
         items.forEach((child: any) => {
           child.set({
-            stroke: effectiveStroke,
-            strokeWidth: nextWidth,
-            strokeDashArray: dash || undefined,
+            stroke: stampStrokeWidth > 0 ? effectiveStroke : null,
+            strokeWidth: stampStrokeWidth,
+            strokeDashArray: stampDash || undefined,
             strokePattern: nextPattern,
             doubleLine: nextDoubleLine,
             strokeUniform: true,
@@ -3344,23 +3534,34 @@ export default function App() {
     );
     if (targets.length === 0) return;
 
-    const fillVal = buildFillValue(nextFill);
     targets.forEach((obj: any) => {
-      const updatePatch: any = {
-        fill: fillVal,
-        fillMeta: { ...nextFill },
+      applyFillToObject(obj, nextFill, fc);
+      obj.set({
         perPixelTargetFind: false,
         targetFindTolerance: 16,
         dirty: true,
-      };
-      if (nextFill.mode === 'none' && (!obj.strokeWidth || obj.strokeWidth === 0)) {
-        const restoreColor = obj.strokeColorHex || '#000000';
-        const restoreOpacity =
-          typeof obj.strokeOpacity === 'number' ? obj.strokeOpacity : 1;
-        updatePatch.strokeWidth = 1;
-        updatePatch.stroke = applyColorOpacity(restoreColor, restoreOpacity);
+      });
+
+      if (nextFill.mode === 'none') {
+        const currentWidth = obj.isStampGroup
+          ? Array.isArray(obj._objects) && obj._objects[0]
+            ? obj._objects[0].strokeWidth
+            : 2
+          : obj.strokeWidth;
+        if (!currentWidth || currentWidth === 0) {
+          const restoreColor = obj.strokeColorHex || obj.stampColor || '#000000';
+          const restoreOpacity =
+            typeof obj.strokeOpacity === 'number' ? obj.strokeOpacity : 1;
+          const restoredStroke = applyColorOpacity(restoreColor, restoreOpacity);
+          if (obj.isStampGroup && Array.isArray(obj._objects)) {
+            obj._objects.forEach((child: any) =>
+              child.set({ strokeWidth: 1, stroke: restoredStroke, dirty: true })
+            );
+          } else {
+            obj.set({ strokeWidth: 1, stroke: restoredStroke, dirty: true });
+          }
+        }
       }
-      obj.set(updatePatch);
       obj.setCoords();
     });
     fc.requestRenderAll();
@@ -3480,6 +3681,9 @@ export default function App() {
     });
     if (typeof obj.cornerRoundRatio === 'number' && obj.cornerRoundRatio > 0) {
       applyCornerRoundingToObject(nextPoly, obj.cornerRoundRatio);
+    }
+    if (nextPoly.fillMeta?.mode === 'photo') {
+      refreshObjectPhotoFill(nextPoly, fc);
     }
 
     const idx = fc.getObjects().indexOf(obj);
@@ -3734,11 +3938,17 @@ export default function App() {
       if (cloned.type === 'activeSelection') {
         cloned.canvas = fc;
         cloned.forEachObject((obj: any) => {
+          if (obj.fillMeta?.mode === 'photo') {
+            refreshObjectPhotoFill(obj, fc);
+          }
           attachControlsToObject(obj);
           fc.add(obj);
         });
         cloned.setCoords();
       } else {
+        if (cloned.fillMeta?.mode === 'photo') {
+          refreshObjectPhotoFill(cloned, fc);
+        }
         attachControlsToObject(cloned);
         fc.add(cloned);
       }
@@ -3765,24 +3975,6 @@ export default function App() {
     fc.sendToBack(active);
     fc.requestRenderAll();
     saveHistory();
-  };
-
-  const handleClearCanvas = () => {
-    const fc = fabricCanvasRef.current;
-    if (!fc) return;
-    if (bezierSessionRef.current) {
-      finalizeBezierSession(true);
-    }
-    if (contourSessionRef.current) {
-      finalizeContourSession(true);
-    }
-    fc.clear();
-    fc.backgroundColor = null;
-    fc.requestRenderAll();
-    setSelectedInfo(null);
-    setObjectEditorOpen(false);
-    saveHistory();
-    setActivePopover(null);
   };
 
   const fitCanvasToArtboard = useCallback(
@@ -3928,6 +4120,7 @@ export default function App() {
 
   return (
     <div
+      data-app-version={APP_VERSION}
       className={`relative w-screen h-dvh overflow-hidden select-none ${
         isDarkBg ? 'dark bg-[#1E1E1E]' : 'bg-white'
       }`}
@@ -3943,6 +4136,10 @@ export default function App() {
           : undefined
       }
     >
+      {/* Hidden invisible version marker (incremented by 0.01 per update) */}
+      <span className="sr-only" aria-hidden="true" data-app-version={APP_VERSION}>
+        {APP_VERSION}
+      </span>
       {/* Synced Background Canvas (White / Custom / Gradient / Grid / Lined / Dark) */}
       <canvas
         ref={bgCanvasRef}
@@ -4004,7 +4201,7 @@ export default function App() {
         </button>
       )}
 
-      {/* Floating Eye Trigger + 6-Button Right Sidebar */}
+      {/* Floating Eye Trigger + Vertical Sidebar + Quick-Select Button */}
       <RightSidebar
         t={t}
         isOpen={sidebarOpen}
@@ -4012,6 +4209,8 @@ export default function App() {
         activePopover={activePopover}
         onTogglePopover={handleTogglePopover}
         activeMode={activeMode}
+        onSelectMode={handleSelectMode}
+        onSelectAll={handleSelectAll}
         onActivateEraser={handleActivateEraser}
         onTriggerImageUpload={() => fileInputRef.current?.click()}
         onUndo={handleUndo}
@@ -4032,6 +4231,21 @@ export default function App() {
           <Check className="w-3.5 h-3.5 shrink-0" />
           <span className="text-xs font-semibold whitespace-nowrap">
             {t('offlineSavedToast')}
+          </span>
+        </div>
+      )}
+
+      {selectAllToast && (
+        <div
+          className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 px-3.5 py-2 rounded-2xl border backdrop-blur-md flex items-center gap-2 shadow-xl pointer-events-none ${
+            isDarkBg
+              ? 'bg-neutral-900/95 border-blue-500/40 text-blue-300'
+              : 'bg-white/95 border-blue-200 text-blue-700'
+          }`}
+        >
+          <Check className="w-3.5 h-3.5 shrink-0" />
+          <span className="text-xs font-semibold whitespace-nowrap">
+            {t('selectedAllToast')}
           </span>
         </div>
       )}
@@ -4151,13 +4365,13 @@ export default function App() {
             );
             setActivePopover(null);
           }}
-          onClearCanvas={handleClearCanvas}
           zoomPercent={zoomPercent}
           onResetView={handleResetView}
           languagePref={languagePref}
           onChangeLanguage={handleChangeLanguage}
           onOpenHelp={() => {
             setActivePopover(null);
+            setHelpInitialFullscreen(false);
             setHelpOpen(true);
           }}
           onTriggerOfflineDownload={handleTriggerOfflineDownload}
@@ -4347,6 +4561,9 @@ export default function App() {
         <HelpModal
           lang={resolvedLang}
           isDarkBg={isDarkBg}
+          dontShowAgain={dontShowTutorialAgain}
+          initialFullscreenDemo={helpInitialFullscreen}
+          onToggleDontShowAgain={handleToggleDontShowTutorial}
           onClose={() => setHelpOpen(false)}
         />
       )}

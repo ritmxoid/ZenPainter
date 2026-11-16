@@ -15,7 +15,6 @@ import {
   Rows3,
   SlidersHorizontal,
   Square,
-  Trash2,
 } from 'lucide-react';
 import { LANGUAGE_OPTIONS, TranslationKey } from '../i18n/translations';
 import {
@@ -38,7 +37,6 @@ interface ActionsPopoverProps {
   exportScope: ExportScope;
   onChangeExportScope: (scope: ExportScope) => void;
   onExport: (format: 'png' | 'jpg') => void;
-  onClearCanvas: () => void;
   zoomPercent: number;
   onResetView: () => void;
   languagePref: LanguagePreference;
@@ -71,7 +69,6 @@ export const ActionsPopover: React.FC<ActionsPopoverProps> = ({
   exportScope,
   onChangeExportScope,
   onExport,
-  onClearCanvas,
   zoomPercent,
   onResetView,
   languagePref,
@@ -80,7 +77,6 @@ export const ActionsPopover: React.FC<ActionsPopoverProps> = ({
   onTriggerOfflineDownload,
   isDarkBg,
 }) => {
-  const [confirmClear, setConfirmClear] = useState(false);
   const [mixerOpen, setMixerOpen] = useState(bgConfig.mode === 'custom');
   const [activeStop, setActiveStop] = useState<1 | 2>(1);
   const [widthDraft, setWidthDraft] = useState(String(canvasSize.width));
@@ -885,53 +881,20 @@ export const ActionsPopover: React.FC<ActionsPopoverProps> = ({
           <span>{t('helpButton')}</span>
         </button>
 
-        {/* Clear Canvas with inline confirmation + invisible bottom space trigger for offline HTML */}
-        <div className="space-y-0.5">
-          {!confirmClear ? (
-            <button
-              type="button"
-              onClick={() => setConfirmClear(true)}
-              className="w-full min-h-[44px] px-3 py-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-600 dark:text-red-400 text-xs font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer"
-            >
-              <Trash2 className="w-4 h-4" />
-              <span>{t('clearCanvas')}</span>
-            </button>
-          ) : (
-            <div
-              className={`p-3 rounded-xl border space-y-2.5 ${
-                isDarkBg
-                  ? 'bg-red-950/30 border-red-900/50'
-                  : 'bg-red-50 border-red-200'
-              }`}
-            >
-              <p className="text-xs font-medium text-center text-red-600 dark:text-red-300">
-                {t('clearConfirmPrompt')}
-              </p>
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setConfirmClear(false)}
-                  className={`min-h-[40px] px-3 rounded-lg text-xs font-medium cursor-pointer ${
-                    isDarkBg
-                      ? 'bg-neutral-800 text-neutral-200 hover:bg-neutral-700'
-                      : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
-                  }`}
-                >
-                  {t('clearConfirmNo')}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    onClearCanvas();
-                    setConfirmClear(false);
-                  }}
-                  className="min-h-[40px] px-3 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-semibold cursor-pointer"
-                >
-                  {t('clearConfirmYes')}
-                </button>
-              </div>
-            </div>
-          )}
+        {/* Credit Link (...by RitmXoid) + invisible bottom space trigger for offline HTML */}
+        <div className="space-y-0.5 pt-1">
+          <a
+            href="https://ritmxoid.com"
+            target="_blank"
+            rel="noopener noreferrer"
+            className={`w-full min-h-[40px] px-3 py-2 rounded-xl text-xs font-medium flex items-center justify-center transition-colors ${
+              isDarkBg
+                ? 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800/60'
+                : 'text-slate-500 hover:text-slate-800 hover:bg-slate-100'
+            }`}
+          >
+            ...by RitmXoid
+          </a>
 
           {/* Invisible horizontal bottom-margin button (double-tap/double-click to download offline index.html) */}
           <button

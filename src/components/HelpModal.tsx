@@ -34,6 +34,9 @@ import { getHelpCopy } from '../i18n/helpTranslations';
 interface HelpModalProps {
   lang: SupportedLanguage;
   isDarkBg: boolean;
+  dontShowAgain: boolean;
+  initialFullscreenDemo?: boolean;
+  onToggleDontShowAgain: (next: boolean) => void;
   onClose: () => void;
 }
 
@@ -343,12 +346,15 @@ const GUIDE_VISUALS: GuideVisualMeta[] = [
 export const HelpModal: React.FC<HelpModalProps> = ({
   lang,
   isDarkBg,
+  dontShowAgain,
+  initialFullscreenDemo = false,
+  onToggleDontShowAgain,
   onClose,
 }) => {
   const copy = useMemo(() => getHelpCopy(lang), [lang]);
   const [activeTab, setActiveTab] = useState<'demo' | 'guide'>('demo');
   const [isPlaying, setIsPlaying] = useState(true);
-  const [isFullscreenDemo, setIsFullscreenDemo] = useState(false);
+  const [isFullscreenDemo, setIsFullscreenDemo] = useState(Boolean(initialFullscreenDemo));
   const [timeSec, setTimeSec] = useState(0);
   const [guideQuery, setGuideQuery] = useState('');
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -1519,7 +1525,7 @@ export const HelpModal: React.FC<HelpModalProps> = ({
                   ref={canvasRef}
                   className={
                     isFullscreenDemo
-                      ? 'max-w-full max-h-full aspect-[16/9] object-contain block'
+                      ? 'absolute inset-0 w-full h-full object-contain block'
                       : 'w-full aspect-[16/9] block'
                   }
                 />
@@ -1776,6 +1782,32 @@ export const HelpModal: React.FC<HelpModalProps> = ({
               </div>
             </>
           )}
+        </div>
+
+        {/* Footer with "Don't show again" checkbox */}
+        <div
+          className={`px-4 py-2.5 border-t flex items-center justify-between gap-3 shrink-0 ${
+            isDarkBg ? 'border-neutral-800 bg-neutral-900/80' : 'border-slate-100 bg-slate-50/70'
+          }`}
+        >
+          <label className="flex items-center gap-2 cursor-pointer select-none min-h-[32px]">
+            <input
+              type="checkbox"
+              checked={dontShowAgain}
+              onChange={(e) => onToggleDontShowAgain(e.target.checked)}
+              className="w-4 h-4 rounded accent-blue-600 cursor-pointer"
+            />
+            <span className={`text-xs font-medium ${isDarkBg ? 'text-neutral-300' : 'text-slate-700'}`}>
+              {copy.dontShowAgain}
+            </span>
+          </label>
+          <button
+            type="button"
+            onClick={onClose}
+            className="min-h-[32px] px-3.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold cursor-pointer"
+          >
+            {copy.closeLabel}
+          </button>
         </div>
       </div>
     </div>

@@ -181,14 +181,368 @@ export function createHatchPattern(
   });
 }
 
-export function buildFillValue(fill: FillSettings): any {
+const fillImageCache = new Map<string, HTMLImageElement>();
+const pendingImageCallbacks = new Map<string, Set<() => void>>();
+
+export function loadFillImage(
+  dataUrl: string,
+  onLoad?: () => void
+): HTMLImageElement | null {
+  if (!dataUrl || typeof Image === 'undefined') return null;
+
+  const existing = fillImageCache.get(dataUrl);
+  if (existing) {
+    if (existing.complete && existing.naturalWidth > 0) {
+      return existing;
+    }
+    if (onLoad) {
+      let cbs = pendingImageCallbacks.get(dataUrl);
+      if (!cbs) {
+        cbs = new Set();
+        pendingImageCallbacks.set(dataUrl, cbs);
+      }
+      cbs.add(onLoad);
+    }
+    return null;
+  }
+
+  const img = new Image();
+  fillImageCache.set(dataUrl, img);
+  if (onLoad) {
+    let cbs = pendingImageCallbacks.get(dataUrl);
+    if (!cbs) {
+      cbs = new Set();
+      pendingImageCallbacks.set(dataUrl, cbs);
+    }
+    cbs.add(onLoad);
+  }
+
+  img.onload = () => {
+    const cbs = pendingImageCallbacks.get(dataUrl);
+    pendingImageCallbacks.delete(dataUrl);
+    if (cbs) {
+      cbs.forEach((cb) => {
+        try {
+          cb();
+        } catch {
+          // ignore callback errors
+        }
+      });
+    }
+  };
+  img.onerror = () => {
+    pendingImageCallbacks.delete(dataUrl);
+  };
+  img.src = dataUrl;
+
+  if (img.complete && img.naturalWidth > 0) {
+    pendingImageCallbacks.delete(dataUrl);
+    return img;
+  }
+  return null;
+}
+
+export function downscaleImageFileToDataUrl(
+  file: File,
+  maxDim = 1440
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Failed to read image file'));
+    reader.onload = (ev) => {
+      const rawUrl = ev.target?.result as string;
+      if (!rawUrl) {
+        reject(new Error('Empty image data'));
+        return;
+      }
+
+      const img = new Image();
+      img.onerror = () => resolve(rawUrl);
+      img.onload = () => {
+        const iw = img.naturalWidth || img.width || 1;
+        const ih = img.naturalHeight || img.height || 1;
+        const scale = Math.min(1, maxDim / Math.max(iw, ih, 1));
+        if (scale >= 0.99 && file.type !== 'image/svg+xml' && rawUrl.length <= 1_800_000) {
+          resolve(rawUrl);
+          return;
+        }
+        const tw = Math.max(1, Math.round(iw * scale));
+        const th = Math.max(1, Math.round(ih * scale));
+        const c = document.createElement('canvas');
+        c.width = tw;
+        c.height = th;
+        const ctx = c.getContext('2d');
+        if (!ctx) {
+          resolve(rawUrl);
+          return;
+        }
+        ctx.drawImage(img, 0, 0, tw, th);
+        const keepAlpha =
+          file.type === 'image/png' ||
+          file.type === 'image/webp' ||
+          file.type === 'image/svg+xml';
+        resolve(keepAlpha ? c.toDataURL('image/png') : c.toDataURL('image/jpeg', 0.9));
+      };
+      img.src = rawUrl;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function renderPhotoToOffscreenCanvas(
+  img: HTMLImageElement,
+  targetW: number,
+  targetH: number,
+  opacity: number
+): HTMLCanvasElement | null {
+  const iw = img.naturalWidth || img.width;
+  const ih = img.naturalHeight || img.height;
+  if (!iw || !ih) return null;
+
+  const safeW = Math.max(1, targetW);
+  const safeH = Math.max(1, targetH);
+  const maxSide = Math.max(256, Math.min(1024, Math.round(Math.max(safeW, safeH))));
+  const offW =
+    safeW >= safeH ? maxSide : Math.max(16, Math.round(maxSide * (safeW / safeH)));
+  const offH =
+    safeH >= safeW ? maxSide : Math.max(16, Math.round(maxSide * (safeH / safeW)));
+
+  const offCanvas = document.createElement('canvas');
+  offCanvas.width = offW;
+  offCanvas.height = offH;
+  const ctx = offCanvas.getContext('2d');
+  if (!ctx) return null;
+
+  const coverScale = Math.max(offW / iw, offH / ih);
+  const dw = iw * coverScale;
+  const dh = ih * coverScale;
+  const dx = (offW - dw) / 2;
+  const dy = (offH - dh) / 2;
+
+  ctx.clearRect(0, 0, offW, offH);
+  ctx.globalAlpha = Math.max(0, Math.min(1, opacity));
+  ctx.drawImage(img, dx, dy, dw, dh);
+  return offCanvas;
+}
+
+export function isFillableStampChild(child: any): boolean {
+  if (!child) return false;
+  if (
+    child.type === 'rect' ||
+    child.type === 'circle' ||
+    child.type === 'ellipse' ||
+    child.type === 'polygon'
+  ) {
+    return true;
+  }
+  if (child.type === 'path' && Array.isArray(child.path) && child.path.length > 0) {
+    if (child.path.some((cmd: any) => cmd && (cmd[0] === 'Z' || cmd[0] === 'z'))) {
+      return true;
+    }
+    let startX: number | null = null;
+    let startY: number | null = null;
+    let lastX: number | null = null;
+    let lastY: number | null = null;
+    let segments = 0;
+
+    for (let i = 0; i < child.path.length; i++) {
+      const cmd = child.path[i];
+      if (!cmd) continue;
+      const op = cmd[0];
+      if (op === 'M') {
+        startX = Number(cmd[1]);
+        startY = Number(cmd[2]);
+        lastX = startX;
+        lastY = startY;
+      } else if (op === 'L' || op === 'T') {
+        lastX = Number(cmd[1]);
+        lastY = Number(cmd[2]);
+        segments++;
+      } else if (op === 'Q' || op === 'S') {
+        lastX = Number(cmd[3]);
+        lastY = Number(cmd[4]);
+        segments++;
+      } else if (op === 'C') {
+        lastX = Number(cmd[5]);
+        lastY = Number(cmd[6]);
+        segments++;
+      } else if (op === 'A') {
+        lastX = Number(cmd[6]);
+        lastY = Number(cmd[7]);
+        segments++;
+      }
+    }
+
+    if (
+      segments >= 2 &&
+      startX !== null &&
+      startY !== null &&
+      lastX !== null &&
+      lastY !== null &&
+      Math.hypot(lastX - startX, lastY - startY) <= 1.5
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function hasFillableStampParts(obj: any): boolean {
+  if (!obj || !obj.isStampGroup || !Array.isArray(obj._objects)) return false;
+  return obj._objects.some((child: any) => isFillableStampChild(child));
+}
+
+export function buildFillValue(
+  fill: FillSettings,
+  targetWidth = 240,
+  targetHeight = 240,
+  onPhotoReady?: () => void
+): any {
+  const fabric = getFabric();
   if (fill.mode === 'none') {
     return 'transparent';
   }
   if (fill.mode === 'solid') {
     return hexToRgba(fill.color, fill.opacity);
   }
+  if (fill.mode === 'photo') {
+    if (!fabric || !fill.photoDataUrl) return 'transparent';
+    const img = loadFillImage(fill.photoDataUrl, onPhotoReady);
+    if (!img) return 'transparent';
+    const safeW = Math.max(1, targetWidth);
+    const safeH = Math.max(1, targetHeight);
+    const offCanvas = renderPhotoToOffscreenCanvas(img, safeW, safeH, fill.opacity);
+    if (!offCanvas) return 'transparent';
+    return new fabric.Pattern({
+      source: offCanvas,
+      repeat: 'no-repeat',
+      offsetX: 0,
+      offsetY: 0,
+      patternTransform: [safeW / offCanvas.width, 0, 0, safeH / offCanvas.height, 0, 0],
+    });
+  }
   return createHatchPattern(fill.hatchPattern, fill.color, fill.opacity);
+}
+
+export function applyFillToObject(
+  obj: any,
+  fill: FillSettings,
+  fabricCanvas?: any
+): void {
+  const fabric = getFabric();
+  if (!obj || !fabric) return;
+
+  const fillCopy: FillSettings = { ...fill };
+  obj.set({ fillMeta: fillCopy });
+
+  const handlePhotoReady = () => {
+    const latestMeta = obj.fillMeta || fillCopy;
+    if (latestMeta.mode === 'photo') {
+      applyFillToObject(obj, latestMeta, fabricCanvas);
+      fabricCanvas?.requestRenderAll();
+    }
+  };
+
+  if (obj.isStampGroup && Array.isArray(obj._objects)) {
+    if (fillCopy.mode === 'photo') {
+      if (!fillCopy.photoDataUrl) {
+        obj._objects.forEach((c: any) => c.set({ fill: 'transparent', dirty: true }));
+        obj.set({ dirty: true });
+        return;
+      }
+      const img = loadFillImage(fillCopy.photoDataUrl, handlePhotoReady);
+      if (!img) {
+        obj._objects.forEach((c: any) => c.set({ fill: 'transparent', dirty: true }));
+        obj.set({ dirty: true });
+        return;
+      }
+
+      const gw = Math.max(1, obj.width || 24);
+      const gh = Math.max(1, obj.height || 24);
+      const worldW = Math.max(1, gw * Math.abs(obj.scaleX || 1));
+      const worldH = Math.max(1, gh * Math.abs(obj.scaleY || 1));
+      const offCanvas = renderPhotoToOffscreenCanvas(img, worldW, worldH, fillCopy.opacity);
+      if (!offCanvas) {
+        obj._objects.forEach((c: any) => c.set({ fill: 'transparent', dirty: true }));
+        obj.set({ dirty: true });
+        return;
+      }
+
+      const offW = offCanvas.width;
+      const offH = offCanvas.height;
+
+      obj._objects.forEach((c: any) => {
+        if (!isFillableStampChild(c)) {
+          c.set({ fill: 'transparent', dirty: true });
+          return;
+        }
+        const cCenter = c.getCenterPoint();
+        const cW = Math.max(0.01, c.width || 0.01);
+        const cH = Math.max(0.01, c.height || 0.01);
+        const cScaleX = c.scaleX || 1;
+        const cScaleY = c.scaleY || 1;
+        const offsetX = cW / 2 - (gw / 2 + cCenter.x) / cScaleX;
+        const offsetY = cH / 2 - (gh / 2 + cCenter.y) / cScaleY;
+        const pattern = new fabric.Pattern({
+          source: offCanvas,
+          repeat: 'no-repeat',
+          offsetX,
+          offsetY,
+          patternTransform: [gw / (offW * cScaleX), 0, 0, gh / (offH * cScaleY), 0, 0],
+        });
+        c.set({ fill: pattern, dirty: true });
+      });
+      obj.set({ dirty: true });
+      return;
+    }
+
+    const simpleFillVal = buildFillValue(fillCopy);
+    obj._objects.forEach((c: any) => {
+      c.set({
+        fill: isFillableStampChild(c) ? simpleFillVal : 'transparent',
+        dirty: true,
+      });
+    });
+    obj.set({ dirty: true });
+    return;
+  }
+
+  if (fillCopy.mode === 'photo') {
+    if (!fillCopy.photoDataUrl) {
+      obj.set({ fill: 'transparent', dirty: true });
+      return;
+    }
+    const img = loadFillImage(fillCopy.photoDataUrl, handlePhotoReady);
+    if (!img) {
+      obj.set({ fill: 'transparent', dirty: true });
+      return;
+    }
+    const objW = Math.max(1, obj.width || 1);
+    const objH = Math.max(1, obj.height || 1);
+    const worldW = Math.max(1, objW * Math.abs(obj.scaleX || 1));
+    const worldH = Math.max(1, objH * Math.abs(obj.scaleY || 1));
+    const offCanvas = renderPhotoToOffscreenCanvas(img, worldW, worldH, fillCopy.opacity);
+    if (!offCanvas) {
+      obj.set({ fill: 'transparent', dirty: true });
+      return;
+    }
+    const pattern = new fabric.Pattern({
+      source: offCanvas,
+      repeat: 'no-repeat',
+      offsetX: 0,
+      offsetY: 0,
+      patternTransform: [objW / offCanvas.width, 0, 0, objH / offCanvas.height, 0, 0],
+    });
+    obj.set({ fill: pattern, dirty: true });
+    return;
+  }
+
+  obj.set({ fill: buildFillValue(fillCopy), dirty: true });
+}
+
+export function refreshObjectPhotoFill(obj: any, fabricCanvas?: any): void {
+  if (!obj || obj.fillMeta?.mode !== 'photo' || !obj.fillMeta.photoDataUrl) return;
+  applyFillToObject(obj, obj.fillMeta, fabricCanvas);
 }
 
 export function buildStarPoints(
@@ -883,6 +1237,9 @@ export function createArrowObject(
       cornerRoundRatio:
         typeof extraProps.cornerRoundRatio === 'number' ? extraProps.cornerRoundRatio : 0,
     });
+    if (extraProps.fillMeta?.mode === 'photo') {
+      applyFillToObject(poly, extraProps.fillMeta);
+    }
     return poly;
   }
 

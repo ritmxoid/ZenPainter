@@ -4,6 +4,7 @@ import {
   Circle,
   Droplets,
   Grid3X3,
+  Image as ImageIcon,
   Magnet,
   Minus,
   MousePointer2,
@@ -31,7 +32,7 @@ import {
   SelectedObjectInfo,
   StrokeSettings,
 } from '../types/paint';
-import { buildPolygonPoints } from '../utils/canvasHelpers';
+import { buildPolygonPoints, downscaleImageFileToDataUrl } from '../utils/canvasHelpers';
 
 interface ShapesPopoverProps {
   t: (key: TranslationKey) => string;
@@ -223,6 +224,7 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
   const patternLongPressTimerRef = useRef<number | null>(null);
   const patternLongPressTriggeredRef = useRef(false);
   const patternPressStartRef = useRef<{ x: number; y: number } | null>(null);
+  const fillPhotoInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (selectedInfo?.isPolygonMorphable) {
@@ -338,6 +340,7 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
     { id: 'none', labelKey: 'fillNone' },
     { id: 'solid', labelKey: 'fillSolid' },
     { id: 'pattern', labelKey: 'fillPattern' },
+    { id: 'photo', labelKey: 'fillPhoto' },
   ];
 
   const hatchOptions: Array<{ id: HatchPattern; labelKey: TranslationKey }> = [
@@ -1215,15 +1218,21 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
             )}
           </div>
 
-          <div className={`grid grid-cols-3 gap-1 p-1 rounded-xl ${subSurface}`}>
+          <div className={`grid grid-cols-4 gap-1 p-1 rounded-xl ${subSurface}`}>
             {fillModes.map((fm) => {
               const active = displayFill.mode === fm.id;
               return (
                 <button
                   key={fm.id}
                   type="button"
-                  onClick={() => applyFillUpdate({ ...displayFill, mode: fm.id })}
-                  className={`min-h-[36px] px-2 rounded-lg text-xs font-medium transition-colors cursor-pointer truncate ${
+                  onClick={() => {
+                    if (fm.id === 'photo' && !displayFill.photoDataUrl) {
+                      fillPhotoInputRef.current?.click();
+                      return;
+                    }
+                    applyFillUpdate({ ...displayFill, mode: fm.id });
+                  }}
+                  className={`min-h-[36px] px-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer truncate ${
                     active
                       ? isDarkBg
                         ? 'bg-neutral-900 text-white shadow-sm'
@@ -1239,105 +1248,161 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
             })}
           </div>
 
-          {displayFill.mode !== 'none' && (
-            <div className="space-y-3 pt-1">
-              {displayFill.mode === 'pattern' && (
-                <div className="grid grid-cols-4 gap-1.5">
-                  {hatchOptions.map((h) => {
-                    const active = displayFill.hatchPattern === h.id;
-                    return (
-                      <button
-                        key={h.id}
-                        type="button"
-                        onClick={() =>
-                          applyFillUpdate({ ...displayFill, hatchPattern: h.id })
-                        }
-                        className={`min-h-[44px] p-1.5 rounded-xl border flex flex-col items-center justify-center gap-1 text-[10px] font-medium transition-colors cursor-pointer ${
-                          active
-                            ? 'border-blue-500 bg-blue-500/10 text-blue-600 dark:text-blue-400'
-                            : isDarkBg
-                              ? 'border-neutral-700 bg-neutral-800/50 text-neutral-300 hover:bg-neutral-800'
-                              : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
+          <input
+            ref={fillPhotoInputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp,image/svg+xml"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              e.target.value = '';
+              if (!file) return;
+              void downscaleImageFileToDataUrl(file).then((photoDataUrl) => {
+                applyFillUpdate({
+                  ...displayFill,
+                  mode: 'photo',
+                  photoDataUrl,
+                });
+              });
+            }}
+            className="hidden"
+          />
+
+          {(displayFill.mode !== 'none' || Boolean(displayFill.photoDataUrl)) &&
+            displayFill.mode !== 'none' && (
+              <div className="space-y-3 pt-1">
+                {displayFill.mode === 'pattern' && (
+                  <div className="grid grid-cols-4 gap-1.5">
+                    {hatchOptions.map((h) => {
+                      const active = displayFill.hatchPattern === h.id;
+                      return (
+                        <button
+                          key={h.id}
+                          type="button"
+                          onClick={() =>
+                            applyFillUpdate({ ...displayFill, hatchPattern: h.id })
+                          }
+                          className={`min-h-[44px] p-1.5 rounded-xl border flex flex-col items-center justify-center gap-1 text-[10px] font-medium transition-colors cursor-pointer ${
+                            active
+                              ? 'border-blue-500 bg-blue-500/10 text-blue-600 dark:text-blue-400'
+                              : isDarkBg
+                                ? 'border-neutral-700 bg-neutral-800/50 text-neutral-300 hover:bg-neutral-800'
+                                : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
+                          }`}
+                        >
+                          <HatchPreviewSvg pattern={h.id} color={displayFill.color} />
+                          <span className="truncate max-w-full">{t(h.labelKey)}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {displayFill.mode === 'photo' && (
+                  <div
+                    className={`p-2 rounded-xl border flex items-center gap-2.5 ${
+                      isDarkBg
+                        ? 'border-neutral-700 bg-neutral-800/60'
+                        : 'border-slate-200 bg-slate-50'
+                    }`}
+                  >
+                    {displayFill.photoDataUrl ? (
+                      <img
+                        src={displayFill.photoDataUrl}
+                        alt=""
+                        className="w-10 h-10 rounded-lg object-cover border border-black/10 shrink-0"
+                      />
+                    ) : (
+                      <div
+                        className={`w-10 h-10 rounded-lg border flex items-center justify-center shrink-0 ${
+                          isDarkBg ? 'border-neutral-700 bg-neutral-900' : 'border-slate-200 bg-white'
                         }`}
                       >
-                        <HatchPreviewSvg pattern={h.id} color={displayFill.color} />
-                        <span className="truncate max-w-full">{t(h.labelKey)}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
+                        <ImageIcon className={`w-4 h-4 ${mutedText}`} />
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => fillPhotoInputRef.current?.click()}
+                      className="flex-1 min-h-[36px] px-3 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <ImageIcon className="w-3.5 h-3.5 shrink-0" />
+                      <span className="truncate">{t('fillPhotoPick')}</span>
+                    </button>
+                  </div>
+                )}
 
-              {/* Fill Color & Swatches */}
-              <div className="flex items-center gap-2 flex-wrap">
-                <label
-                  className={`relative w-8 h-8 rounded-lg border overflow-hidden cursor-pointer shrink-0 ${
-                    isDarkBg ? 'border-neutral-600' : 'border-slate-300'
-                  }`}
-                >
-                  <input
-                    type="color"
-                    value={displayFill.color}
-                    onChange={(e) =>
-                      applyFillUpdate({ ...displayFill, color: e.target.value })
-                    }
-                    className="absolute inset-0 w-[150%] h-[150%] -top-1/4 -left-1/4 cursor-pointer border-0 p-0"
-                  />
-                </label>
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  {QUICK_COLOR_SWATCHES.map((hex) => {
-                    const selected =
-                      displayFill.color.toLowerCase() === hex.toLowerCase();
-                    return (
-                      <button
-                        key={hex}
-                        type="button"
-                        aria-label={hex}
-                        onClick={() => applyFillUpdate({ ...displayFill, color: hex })}
-                        className={`w-6 h-6 rounded-full border transition-transform cursor-pointer ${
-                          selected
-                            ? 'ring-2 ring-blue-500 ring-offset-1 scale-110'
-                            : 'hover:scale-105'
-                        } ${
-                          hex === '#FFFFFF'
-                            ? 'border-slate-300'
-                            : isDarkBg
-                              ? 'border-neutral-600'
-                              : 'border-black/15'
-                        }`}
-                        style={{ backgroundColor: hex }}
+                {/* Fill Color & Swatches */}
+                {displayFill.mode !== 'photo' && (
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <label
+                      className={`relative w-8 h-8 rounded-lg border overflow-hidden cursor-pointer shrink-0 ${
+                        isDarkBg ? 'border-neutral-600' : 'border-slate-300'
+                      }`}
+                    >
+                      <input
+                        type="color"
+                        value={displayFill.color}
+                        onChange={(e) =>
+                          applyFillUpdate({ ...displayFill, color: e.target.value })
+                        }
+                        className="absolute inset-0 w-[150%] h-[150%] -top-1/4 -left-1/4 cursor-pointer border-0 p-0"
                       />
-                    );
-                  })}
-                </div>
-              </div>
+                    </label>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {QUICK_COLOR_SWATCHES.map((hex) => {
+                        const selected =
+                          displayFill.color.toLowerCase() === hex.toLowerCase();
+                        return (
+                          <button
+                            key={hex}
+                            type="button"
+                            aria-label={hex}
+                            onClick={() => applyFillUpdate({ ...displayFill, color: hex })}
+                            className={`w-6 h-6 rounded-full border transition-transform cursor-pointer ${
+                              selected
+                                ? 'ring-2 ring-blue-500 ring-offset-1 scale-110'
+                                : 'hover:scale-105'
+                            } ${
+                              hex === '#FFFFFF'
+                                ? 'border-slate-300'
+                                : isDarkBg
+                                  ? 'border-neutral-600'
+                                  : 'border-black/15'
+                            }`}
+                            style={{ backgroundColor: hex }}
+                          />
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
 
-              {/* Fill Opacity */}
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <span className={`text-[11px] font-medium ${mutedText}`}>
-                    {t('fillOpacity')}
-                  </span>
-                  <span className="text-[11px] font-semibold tabular-nums">
-                    {Math.round(displayFill.opacity * 100)}%
-                  </span>
+                {/* Fill Opacity */}
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className={`text-[11px] font-medium ${mutedText}`}>
+                      {t('fillOpacity')}
+                    </span>
+                    <span className="text-[11px] font-semibold tabular-nums">
+                      {Math.round(displayFill.opacity * 100)}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    value={Math.round(displayFill.opacity * 100)}
+                    onChange={(e) =>
+                      applyFillUpdate({
+                        ...displayFill,
+                        opacity: Number(e.target.value) / 100,
+                      })
+                    }
+                    className="w-full h-2 rounded-lg accent-blue-600 cursor-pointer"
+                  />
                 </div>
-                <input
-                  type="range"
-                  min={0}
-                  max={100}
-                  value={Math.round(displayFill.opacity * 100)}
-                  onChange={(e) =>
-                    applyFillUpdate({
-                      ...displayFill,
-                      opacity: Number(e.target.value) / 100,
-                    })
-                  }
-                  className="w-full h-2 rounded-lg accent-blue-600 cursor-pointer"
-                />
               </div>
-            </div>
-          )}
+            )}
         </div>
 
         {/* Corner Rounding & Overall Opacity when editing selected object */}

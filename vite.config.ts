@@ -20,7 +20,31 @@ function getLatestMtimeMs(targetPath: string): number {
   }
 }
 
-function singleFileOfflinePlugin(): Plugin {
+function readAppVersion(rootDir: string): string {
+  try {
+    const content = fs.readFileSync(path.join(rootDir, 'src', 'version.ts'), 'utf-8');
+    const match = content.match(/APP_VERSION\s*=\s*['"]([^'"]+)['"]/);
+    return match ? match[1] : '1.02';
+  } catch {
+    return '1.02';
+  }
+}
+
+function getBuildMetadata(rootDir: string, mode: string) {
+  const version = readAppVersion(rootDir);
+  const srcMtime = Math.max(
+    getLatestMtimeMs(path.join(rootDir, 'src')),
+    getLatestMtimeMs(path.join(rootDir, 'index.html')),
+    getLatestMtimeMs(path.join(rootDir, 'vite.config.ts'))
+  );
+  const stamp = mode === 'build' ? `${Math.round(srcMtime)}-${Date.now()}` : `${Math.round(srcMtime)}`;
+  return {
+    version,
+    buildId: `${version}-${stamp}`,
+  };
+}
+
+function singleFileOfflinePlugin(initialMeta: { version: string; buildId: string }): Plugin {
   let pendingBuild: Promise<void> | null = null;
 
   return {
@@ -72,8 +96,29 @@ function singleFileOfflinePlugin(): Plugin {
         fileName: 'bestpaint-offline.html',
         source: html,
       });
+      this.emitFile({
+        type: 'asset',
+        fileName: 'version.json',
+        source: JSON.stringify(initialMeta),
+      });
     },
     configureServer(server) {
+      server.middlewares.use('/version.json', (_req, res) => {
+        const rootDir = server.config.root || process.cwd();
+        const latestVersion = readAppVersion(rootDir);
+        const payload = {
+          version: latestVersion,
+          buildId:
+            latestVersion === initialMeta.version
+              ? initialMeta.buildId
+              : `${latestVersion}-${Date.now()}`,
+        };
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+        res.end(JSON.stringify(payload));
+      });
+
       server.middlewares.use('/bestpaint-offline.html', async (_req, res, next) => {
         try {
           const rootDir = server.config.root || process.cwd();
@@ -124,9 +169,14 @@ export default defineConfig(({command}) => {
   if (command === 'build') {
     process.env.NODE_ENV = 'production';
   }
+  const meta = getBuildMetadata(__dirname, command);
   return {
     base: './',
-    plugins: [react(), tailwindcss(), singleFileOfflinePlugin()],
+    define: {
+      __APP_VERSION__: JSON.stringify(meta.version),
+      __APP_BUILD_ID__: JSON.stringify(meta.buildId),
+    },
+    plugins: [react(), tailwindcss(), singleFileOfflinePlugin(meta)],
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
