@@ -30,6 +30,7 @@ import {
 } from 'lucide-react';
 import { SupportedLanguage } from '../types/paint';
 import { getHelpCopy } from '../i18n/helpTranslations';
+import { trackFunction, trackWindowClose, trackWindowOpen } from '../utils/analytics';
 
 interface HelpModalProps {
   lang: SupportedLanguage;
@@ -360,6 +361,17 @@ export const HelpModal: React.FC<HelpModalProps> = ({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const timeRef = useRef(0);
   const lastTsRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    trackWindowOpen('help_tutorial_modal', {
+      initial_tab: 'demo',
+      fullscreen: Boolean(initialFullscreenDemo),
+      dont_show_again: dontShowAgain,
+      language: lang,
+    });
+    return () => trackWindowClose('help_tutorial_modal');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const currentStepIndex = useMemo(() => {
     const idx = DEMO_TIMINGS.findIndex(
@@ -1382,6 +1394,7 @@ export const HelpModal: React.FC<HelpModalProps> = ({
     const targetSec = DEMO_TIMINGS[clamped].startSec + 0.02;
     timeRef.current = targetSec;
     setTimeSec(targetSec);
+    trackFunction('help_demo_jump_step', 'help', { step_index: clamped + 1 });
   };
 
   const surface = isDarkBg
@@ -1462,7 +1475,10 @@ export const HelpModal: React.FC<HelpModalProps> = ({
             <div className={`grid grid-cols-2 gap-1 p-1 rounded-xl ${subSurface}`}>
               <button
                 type="button"
-                onClick={() => setActiveTab('demo')}
+                onClick={() => {
+                  setActiveTab('demo');
+                  trackFunction('help_switch_tab', 'help', { tab: 'demo' });
+                }}
                 className={`min-h-[32px] px-2.5 sm:px-3 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
                   activeTab === 'demo'
                     ? isDarkBg
@@ -1481,6 +1497,7 @@ export const HelpModal: React.FC<HelpModalProps> = ({
                 onClick={() => {
                   setIsFullscreenDemo(false);
                   setActiveTab('guide');
+                  trackFunction('help_switch_tab', 'help', { tab: 'guide' });
                 }}
                 className={`min-h-[32px] px-2.5 sm:px-3 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
                   activeTab === 'guide'
@@ -1550,7 +1567,13 @@ export const HelpModal: React.FC<HelpModalProps> = ({
                 {/* Top-Right Fullscreen Demo Toggle Button */}
                 <button
                   type="button"
-                  onClick={() => setIsFullscreenDemo((f) => !f)}
+                  onClick={() =>
+                    setIsFullscreenDemo((f) => {
+                      const next = !f;
+                      trackFunction('help_demo_fullscreen', 'help', { fullscreen: next });
+                      return next;
+                    })
+                  }
                   title={isFullscreenDemo ? copy.fullscreenExit : copy.fullscreenEnter}
                   aria-label={isFullscreenDemo ? copy.fullscreenExit : copy.fullscreenEnter}
                   className={`absolute top-2 right-2 w-8 h-8 rounded-xl border backdrop-blur-sm flex items-center justify-center transition-colors cursor-pointer ${
@@ -1580,7 +1603,13 @@ export const HelpModal: React.FC<HelpModalProps> = ({
                 <div className="flex items-center gap-1.5">
                   <button
                     type="button"
-                    onClick={() => setIsPlaying((p) => !p)}
+                    onClick={() =>
+                      setIsPlaying((p) => {
+                        const next = !p;
+                        trackFunction('help_demo_play_toggle', 'help', { playing: next });
+                        return next;
+                      })
+                    }
                     className="min-h-[36px] px-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
                   >
                     {isPlaying ? (
@@ -1600,6 +1629,7 @@ export const HelpModal: React.FC<HelpModalProps> = ({
                     onClick={() => {
                       jumpToStep(0);
                       setIsPlaying(true);
+                      trackFunction('help_demo_restart', 'help');
                     }}
                     title={copy.restart}
                     className={`min-h-[36px] px-2.5 rounded-xl border text-xs font-medium flex items-center gap-1 cursor-pointer ${

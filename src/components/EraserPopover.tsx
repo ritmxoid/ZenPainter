@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Trash2 } from 'lucide-react';
 import { TranslationKey } from '../i18n/translations';
+import { trackFunction, trackWindowClose, trackWindowOpen } from '../utils/analytics';
 
 interface EraserPopoverProps {
   t: (key: TranslationKey) => string;
@@ -19,6 +20,12 @@ export const EraserPopover: React.FC<EraserPopoverProps> = ({
   onDeleteSelected,
   isDarkBg,
 }) => {
+  useEffect(() => {
+    trackWindowOpen('eraser_popover', { eraser_size: size, has_selection: hasSelectedObject });
+    return () => trackWindowClose('eraser_popover');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const surface = isDarkBg
     ? 'bg-neutral-900/95 text-neutral-100 border-neutral-700/80 shadow-2xl shadow-black/50'
     : 'bg-white/95 text-slate-900 border-slate-200/90 shadow-xl shadow-slate-900/10';
@@ -54,6 +61,7 @@ export const EraserPopover: React.FC<EraserPopoverProps> = ({
             max={80}
             value={size}
             onChange={(e) => onChangeSize(Number(e.target.value))}
+            onPointerUp={() => trackFunction('change_eraser_size', 'eraser', { eraser_size: size })}
             aria-label={t('eraserSize')}
             className="w-full h-2 rounded-lg accent-blue-600 cursor-pointer"
           />

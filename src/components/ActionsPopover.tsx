@@ -26,6 +26,7 @@ import {
   LanguagePreference,
 } from '../types/paint';
 import { hexToRgb, rgbToHex } from '../utils/canvasHelpers';
+import { trackFunction, trackWindowClose, trackWindowOpen } from '../utils/analytics';
 
 interface ActionsPopoverProps {
   t: (key: TranslationKey) => string;
@@ -83,6 +84,16 @@ export const ActionsPopover: React.FC<ActionsPopoverProps> = ({
   const [heightDraft, setHeightDraft] = useState(String(canvasSize.height));
   const lastSecretTapRef = useRef<number>(0);
 
+  useEffect(() => {
+    trackWindowOpen('actions_popover', {
+      bg_mode: bgConfig.mode,
+      canvas_preset: canvasSize.preset,
+      zoom_percent: zoomPercent,
+    });
+    return () => trackWindowClose('actions_popover');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleSecretAreaClick = () => {
     const now = Date.now();
     if (now - lastSecretTapRef.current <= 450) {
@@ -139,6 +150,7 @@ export const ActionsPopover: React.FC<ActionsPopoverProps> = ({
   const handleOpenMixer = () => {
     const willOpen = !mixerOpen;
     setMixerOpen(willOpen);
+    trackFunction('toggle_bg_mixer', 'background', { is_open: willOpen });
     if (willOpen && (bgConfig.mode === 'white' || bgConfig.mode === 'dark')) {
       onChangeBgConfig({
         ...bgConfig,
@@ -176,7 +188,10 @@ export const ActionsPopover: React.FC<ActionsPopoverProps> = ({
           <div className={`grid grid-cols-2 gap-1 p-1 rounded-xl ${subSurface}`}>
             <button
               type="button"
-              onClick={() => onChangeExportScope('canvas')}
+              onClick={() => {
+                trackFunction('change_export_scope', 'export', { scope: 'canvas' });
+                onChangeExportScope('canvas');
+              }}
               className={`min-h-[34px] px-2 rounded-lg text-[11px] font-medium flex items-center justify-center gap-1 transition-colors cursor-pointer ${
                 exportScope === 'canvas'
                   ? isDarkBg
@@ -192,7 +207,10 @@ export const ActionsPopover: React.FC<ActionsPopoverProps> = ({
             </button>
             <button
               type="button"
-              onClick={() => onChangeExportScope('artwork')}
+              onClick={() => {
+                trackFunction('change_export_scope', 'export', { scope: 'artwork' });
+                onChangeExportScope('artwork');
+              }}
               className={`min-h-[34px] px-2 rounded-lg text-[11px] font-medium flex items-center justify-center gap-1 transition-colors cursor-pointer ${
                 exportScope === 'artwork'
                   ? isDarkBg
@@ -887,6 +905,7 @@ export const ActionsPopover: React.FC<ActionsPopoverProps> = ({
             href="https://ritmxoid.com"
             target="_blank"
             rel="noopener noreferrer"
+            onClick={() => trackFunction('click_creator_link', 'navigation', { url: 'https://ritmxoid.com' })}
             className={`w-full min-h-[40px] px-3 py-2 rounded-xl text-xs font-medium flex items-center justify-center transition-colors ${
               isDarkBg
                 ? 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800/60'

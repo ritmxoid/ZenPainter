@@ -1,8 +1,9 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Check, Search } from 'lucide-react';
 import { CYRILLIC_LATIN_FONTS, QUICK_COLOR_SWATCHES } from '../constants/fonts';
 import { TranslationKey } from '../i18n/translations';
 import { FontCategory } from '../types/paint';
+import { trackFunction, trackWindowClose, trackWindowOpen } from '../utils/analytics';
 
 interface TextModalProps {
   t: (key: TranslationKey) => string;
@@ -28,6 +29,12 @@ export const TextModal: React.FC<TextModalProps> = ({
   const [fontFamily, setFontFamily] = useState('Montserrat');
   const [category, setCategory] = useState<'all' | FontCategory>('all');
   const [search, setSearch] = useState('');
+
+  useEffect(() => {
+    trackWindowOpen('text_modal', { default_color: defaultColor });
+    return () => trackWindowClose('text_modal');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const filteredFonts = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -170,7 +177,10 @@ export const TextModal: React.FC<TextModalProps> = ({
                 <button
                   key={cat.id}
                   type="button"
-                  onClick={() => setCategory(cat.id)}
+                  onClick={() => {
+                    setCategory(cat.id);
+                    trackFunction('filter_font_category', 'text', { category: cat.id });
+                  }}
                   className={`flex-1 min-w-fit min-h-[32px] px-2 py-1 rounded-lg text-[11px] font-medium whitespace-nowrap transition-colors cursor-pointer ${
                     active
                       ? isDarkBg
@@ -201,7 +211,10 @@ export const TextModal: React.FC<TextModalProps> = ({
                 <button
                   key={font.family}
                   type="button"
-                  onClick={() => setFontFamily(font.family)}
+                  onClick={() => {
+                    setFontFamily(font.family);
+                    trackFunction('select_font_family', 'text', { font_family: font.family });
+                  }}
                   className={`w-full min-h-[44px] px-3 py-2 flex items-center justify-between gap-2 text-left transition-colors cursor-pointer ${
                     selected
                       ? isDarkBg

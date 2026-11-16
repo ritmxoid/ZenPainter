@@ -56,6 +56,7 @@ import {
   refreshObjectPhotoFill,
 } from './utils/canvasHelpers';
 import { APP_BUILD_ID, APP_VERSION, HIDE_TUTORIAL_STORAGE_KEY } from './version';
+import { trackFunction, trackWindowOpen } from './utils/analytics';
 import {
   attachEndpointControls,
   buildFabricPathFromWorldSegments,
@@ -864,10 +865,17 @@ export default function App() {
           setSelectedInfo(null);
           refreshEmptyState();
           saveHistory();
+          trackFunction('finalize_closed_contour', 'draw', {
+            cancelled: false,
+            closed: isClosed,
+            segments: segs.length,
+            fill_mode: isClosed ? fillRef.current.mode : 'none',
+          });
         }
       } else {
         syncFabricToolState();
         refreshEmptyState();
+        trackFunction('finalize_closed_contour', 'draw', { cancelled: true });
       }
       fc.requestRenderAll();
     },
@@ -948,9 +956,15 @@ export default function App() {
         setSelectedInfo(null);
         refreshEmptyState();
         saveHistory();
+        trackFunction('finalize_bezier_curve', 'draw', {
+          cancelled: false,
+          closed: Boolean(createdPath?.isClosedContour),
+          fill_mode: createdPath?.fillMeta?.mode || 'none',
+        });
       } else {
         syncFabricToolState();
         refreshEmptyState();
+        trackFunction('finalize_bezier_curve', 'draw', { cancelled: true });
       }
       fc.requestRenderAll();
     },
@@ -1038,12 +1052,14 @@ export default function App() {
   const handleUndo = useCallback(() => {
     if (historyIndexRef.current > 0) {
       restoreSnapshot(historyIndexRef.current - 1);
+      trackFunction('undo_action', 'history', { step: historyIndexRef.current });
     }
   }, [restoreSnapshot]);
 
   const handleRedo = useCallback(() => {
     if (historyIndexRef.current < historyRef.current.length - 1) {
       restoreSnapshot(historyIndexRef.current + 1);
+      trackFunction('redo_action', 'history', { step: historyIndexRef.current });
     }
   }, [restoreSnapshot]);
 
@@ -1296,6 +1312,18 @@ export default function App() {
       }
       fc.requestRenderAll();
       saveHistory();
+      if (activeModeRef.current === 'eraser') {
+        trackFunction('erase_stroke', 'eraser', { eraser_size: eraserSizeRef.current });
+      } else if (e.path.isSprayGroup) {
+        trackFunction('draw_freehand_stroke', 'draw', { brush_type: 'spray' });
+      } else {
+        trackFunction('draw_freehand_stroke', 'draw', {
+          brush_type: strokeRef.current.brushType,
+          closed_contour: closedContourRef.current,
+          fill_mode: closedContourRef.current ? fillRef.current.mode : 'none',
+          stroke_width: strokeRef.current.width,
+        });
+      }
     });
 
     // Object transformation history + endpoint merge completion
@@ -2408,6 +2436,11 @@ export default function App() {
       setSelectedInfo(null);
       refreshEmptyState();
       saveHistory();
+      trackFunction('draw_shape', 'draw', {
+        shape_mode: mode,
+        fill_mode: finalShape.fillMeta?.mode || 'none',
+        snap_enabled: snapEnabledRef.current,
+      });
     });
 
     // Live Bezier Handle Dragging + Endpoint Snapping + Bounding Box Sync
@@ -2859,21 +2892,69 @@ export default function App() {
     };
   }, [finalizeBezierSession, finalizeContourSession, handleRedo, handleUndo, saveHistory]);
 
+  // Track initial workspace screen and contextual floating bars
+  useEffect(() => {
+    trackWindowOpen('canvas_workspace', {
+      first_launch: helpOpen,
+      language: resolvedLang,
+      bg_mode: bgConfig.mode,
+      canvas_preset: canvasSize.preset,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (cornerRoundHud) {
+      trackWindowOpen('corner_round_hud', { percent: cornerRoundHud.percent });
+    }
+  }, [Boolean(cornerRoundHud)]);
+
+  useEffect(() => {
+    if (isEditingBezier) {
+      trackWindowOpen('bezier_editor_bar');
+    }
+  }, [isEditingBezier]);
+
+  useEffect(() => {
+    if (isEditingContour) {
+      trackWindowOpen('contour_editor_bar');
+    }
+  }, [isEditingContour]);
+
+  const hasQuickBar = Boolean(
+    !isEditingBezier && !isEditingContour && activeMode === 'select' && selectedInfo
+  );
+  useEffect(() => {
+    if (hasQuickBar && selectedInfo) {
+      trackWindowOpen('object_quick_bar', {
+        object_kind: selectedInfo.kind,
+        selection_count: selectedInfo.selectionCount,
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasQuickBar]);
+
   // Sidebar & Tool Handlers
   const handleToggleSidebar = () => {
     setSidebarOpen((prev) => {
+      const next = !prev;
       if (prev) {
         setActivePopover(null);
       } else {
         setObjectEditorOpen(false);
       }
-      return !prev;
+      trackFunction('toggle_sidebar', 'ui', { is_open: next });
+      return next;
     });
   };
 
   const handleTogglePopover = (pop: ActivePopover) => {
     setObjectEditorOpen(false);
-    setActivePopover((prev) => (prev === pop ? null : pop));
+    setActivePopover((prev) => {
+      const next = prev === pop ? null : pop;
+      trackFunction('toggle_popover', 'ui', { popover: pop || 'none', is_open: Boolean(next) });
+      return next;
+    });
   };
 
   const ensureOfflineBlob = useCallback(async (): Promise<Blob | null> => {
@@ -2929,6 +3010,7 @@ export default function App() {
       document.body.removeChild(link);
       window.setTimeout(() => URL.revokeObjectURL(url), 4000);
       showOfflineSavedToast();
+      trackFunction('download_offline_html', 'export');
     };
 
     if (offlineHtmlBlobRef.current) {
@@ -2974,6 +3056,10 @@ export default function App() {
             const keys = await window.caches.keys();
             await Promise.all(keys.map((k) => window.caches.delete(k)));
           }
+          trackFunction('auto_update_reload', 'app', {
+            from_version: APP_VERSION,
+            to_version: remote.version || remoteBuildKey,
+          });
           window.location.reload();
         }
       } catch {
@@ -3010,6 +3096,7 @@ export default function App() {
 
   const handleToggleDontShowTutorial = useCallback((next: boolean) => {
     setDontShowTutorialAgain(next);
+    trackFunction('help_toggle_dont_show_again', 'help', { dont_show: next });
     if (typeof window === 'undefined') return;
     try {
       if (next) {
@@ -3033,6 +3120,7 @@ export default function App() {
       setObjectEditorOpen(false);
     }
     setActiveMode(mode);
+    trackFunction('select_draw_mode', 'tools', { mode });
   };
 
   const handleSelectAll = useCallback(() => {
@@ -3061,6 +3149,7 @@ export default function App() {
       fc.discardActiveObject();
       fc.requestRenderAll();
       refreshSelectedInfo();
+      trackFunction('select_all_objects', 'selection', { object_count: 0 });
       return;
     }
 
@@ -3078,6 +3167,7 @@ export default function App() {
 
     fc.requestRenderAll();
     refreshSelectedInfo();
+    trackFunction('select_all_objects', 'selection', { object_count: targets.length });
 
     setSelectAllToast(true);
     if (selectAllToastTimerRef.current) {
@@ -3099,6 +3189,7 @@ export default function App() {
     setObjectEditorOpen(false);
     setActiveMode('eraser');
     setActivePopover((prev) => (prev === 'eraser' ? null : 'eraser'));
+    trackFunction('activate_eraser', 'tools', { eraser_size: eraserSizeRef.current });
   };
 
   const handleAddText = async (payload: {
@@ -3159,6 +3250,10 @@ export default function App() {
     fc.requestRenderAll();
     refreshSelectedInfo();
     saveHistory();
+    trackFunction('add_text', 'insert', {
+      font_family: payload.fontFamily,
+      font_size: payload.fontSize,
+    });
 
     setActivePopover(null);
   };
@@ -3209,6 +3304,7 @@ export default function App() {
     fc.requestRenderAll();
     refreshSelectedInfo();
     saveHistory();
+    trackFunction('add_emoji', 'insert', { emoji_name: emoji.name });
 
     setActivePopover(null);
   };
@@ -3282,6 +3378,10 @@ export default function App() {
       fc.requestRenderAll();
       refreshSelectedInfo();
       saveHistory();
+      trackFunction('add_stamp', 'insert', {
+        stamp_id: stamp.id,
+        stamp_category: stamp.category,
+      });
 
       setActivePopover(null);
     });
@@ -3350,6 +3450,10 @@ export default function App() {
           fc.requestRenderAll();
           refreshSelectedInfo();
           saveHistory();
+          trackFunction('upload_canvas_image', 'insert', {
+            file_type: file.type,
+            file_size_kb: Math.round(file.size / 1024),
+          });
 
           setActivePopover(null);
         },
@@ -3522,6 +3626,10 @@ export default function App() {
     fc.requestRenderAll();
     refreshSelectedInfo();
     scheduleHistorySave();
+    trackFunction('update_object_stroke', 'edit', {
+      changed_keys: Object.keys(patch).join(','),
+      target_count: targets.length,
+    });
   };
 
   const handleUpdateSelectedFill = (nextFill: FillSettings) => {
@@ -3567,6 +3675,11 @@ export default function App() {
     fc.requestRenderAll();
     refreshSelectedInfo();
     scheduleHistorySave();
+    trackFunction('update_object_fill', 'edit', {
+      fill_mode: nextFill.mode,
+      has_photo: Boolean(nextFill.photoDataUrl),
+      target_count: targets.length,
+    });
   };
 
   const handleUpdateSelectedOpacity = (opacity: number) => {
@@ -3629,6 +3742,7 @@ export default function App() {
     fc.requestRenderAll();
     refreshSelectedInfo();
     saveHistory();
+    trackFunction('toggle_object_closed_contour', 'edit', { closed: nextClosed });
   };
 
   const handleMorphSelectedPolygon = (variant: PolygonVariant) => {
@@ -3698,6 +3812,7 @@ export default function App() {
     fc.requestRenderAll();
     refreshSelectedInfo();
     saveHistory();
+    trackFunction('morph_object_polygon', 'edit', { variant });
   };
 
   const handleUpdateSelectedGrid = (nextGrid: RectGridConfig) => {
@@ -3733,6 +3848,7 @@ export default function App() {
     fc.requestRenderAll();
     refreshSelectedInfo();
     scheduleHistorySave();
+    trackFunction('update_object_grid', 'edit', { enabled: nextGrid.enabled, rows, cols });
   };
 
   const handleMorphSelectedArrow = (variant: ArrowVariant) => {
@@ -3837,6 +3953,7 @@ export default function App() {
     fc.requestRenderAll();
     refreshSelectedInfo();
     saveHistory();
+    trackFunction('morph_object_arrow', 'edit', { variant });
   };
 
   const handleUpdateSelectedText = async (patch: {
@@ -3869,6 +3986,10 @@ export default function App() {
     fc.requestRenderAll();
     refreshSelectedInfo();
     scheduleHistorySave();
+    trackFunction('update_object_text', 'edit', {
+      font_family: patch.fontFamily,
+      font_size: patch.fontSize,
+    });
   };
 
   const handleEnterTextEdit = () => {
@@ -3879,6 +4000,7 @@ export default function App() {
     obj.enterEditing();
     obj.selectAll();
     fc.requestRenderAll();
+    trackFunction('enter_text_edit', 'edit');
   };
 
   const handleFlipSelected = (axis: 'x' | 'y') => {
@@ -3895,6 +4017,7 @@ export default function App() {
     fc.requestRenderAll();
     refreshSelectedInfo();
     saveHistory();
+    trackFunction('flip_object', 'edit', { axis });
   };
 
   const handleDeleteSelected = () => {
@@ -3908,6 +4031,7 @@ export default function App() {
     setSelectedInfo(null);
     setObjectEditorOpen(false);
     saveHistory();
+    trackFunction('delete_selected', 'edit', { count: active.length });
   };
 
   const handleDuplicateSelected = () => {
@@ -3956,6 +4080,7 @@ export default function App() {
       fc.requestRenderAll();
       refreshSelectedInfo();
       saveHistory();
+      trackFunction('duplicate_selected', 'edit');
     }, CUSTOM_JSON_PROPS);
   };
 
@@ -3966,6 +4091,7 @@ export default function App() {
     fc.bringToFront(active);
     fc.requestRenderAll();
     saveHistory();
+    trackFunction('bring_to_front', 'edit');
   };
 
   const handleSendToBack = () => {
@@ -3975,6 +4101,7 @@ export default function App() {
     fc.sendToBack(active);
     fc.requestRenderAll();
     saveHistory();
+    trackFunction('send_to_back', 'edit');
   };
 
   const fitCanvasToArtboard = useCallback(
@@ -4037,15 +4164,22 @@ export default function App() {
     } else {
       renderBackground();
     }
+    trackFunction('change_canvas_size', 'canvas', {
+      preset: next.preset,
+      width: next.width,
+      height: next.height,
+    });
   };
 
   const handleResetView = () => {
     fitCanvasToArtboard(canvasSizeRef.current);
+    trackFunction('reset_view', 'canvas', { preset: canvasSizeRef.current.preset });
   };
 
   const handleChangeLanguage = (pref: LanguagePreference) => {
     setLanguagePref(pref);
     saveLanguagePreference(pref);
+    trackFunction('change_language', 'settings', { language: pref });
   };
 
   const syncDefaultStrokeContrast = useCallback(
@@ -4089,9 +4223,21 @@ export default function App() {
     }
     setBgConfig(next);
     syncDefaultStrokeContrast(next);
+    trackFunction('select_bg_preset', 'background', { bg_mode: mode });
   };
 
   const handleChangeBgConfig = (next: BackgroundConfig) => {
+    if (
+      next.mode !== bgConfig.mode ||
+      next.fillType !== bgConfig.fillType ||
+      next.gradientType !== bgConfig.gradientType
+    ) {
+      trackFunction('change_bg_config', 'background', {
+        bg_mode: next.mode,
+        fill_type: next.fillType,
+        gradient_type: next.gradientType,
+      });
+    }
     setBgConfig(next);
     syncDefaultStrokeContrast(next);
   };
@@ -4179,7 +4325,14 @@ export default function App() {
           type="button"
           onClick={() => {
             setActivePopover(null);
-            setObjectEditorOpen((prev) => !prev);
+            setObjectEditorOpen((prev) => {
+              const next = !prev;
+              trackFunction('toggle_object_editor', 'ui', {
+                is_open: next,
+                source: 'pencil_badge',
+              });
+              return next;
+            });
           }}
           onPointerDown={(e) => e.stopPropagation()}
           onTouchStart={(e) => e.stopPropagation()}
@@ -4212,7 +4365,10 @@ export default function App() {
         onSelectMode={handleSelectMode}
         onSelectAll={handleSelectAll}
         onActivateEraser={handleActivateEraser}
-        onTriggerImageUpload={() => fileInputRef.current?.click()}
+        onTriggerImageUpload={() => {
+          trackFunction('trigger_image_upload', 'insert');
+          fileInputRef.current?.click();
+        }}
         onUndo={handleUndo}
         onRedo={handleRedo}
         canUndo={canUndo}
@@ -4363,6 +4519,11 @@ export default function App() {
               artboardCenterRef.current,
               exportScope
             );
+            trackFunction('export_image', 'export', {
+              format: fmt,
+              scope: exportScope,
+              canvas_preset: canvasSize.preset,
+            });
             setActivePopover(null);
           }}
           zoomPercent={zoomPercent}
@@ -4373,6 +4534,7 @@ export default function App() {
             setActivePopover(null);
             setHelpInitialFullscreen(false);
             setHelpOpen(true);
+            trackFunction('open_help_from_menu', 'help');
           }}
           onTriggerOfflineDownload={handleTriggerOfflineDownload}
           isDarkBg={isDarkBg}
@@ -4513,7 +4675,14 @@ export default function App() {
             type="button"
             onClick={() => {
               setActivePopover(null);
-              setObjectEditorOpen((prev) => !prev);
+              setObjectEditorOpen((prev) => {
+                const next = !prev;
+                trackFunction('toggle_object_editor', 'ui', {
+                  is_open: next,
+                  source: 'object_quick_bar',
+                });
+                return next;
+              });
             }}
             className={`min-h-[38px] px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
               objectEditorOpen

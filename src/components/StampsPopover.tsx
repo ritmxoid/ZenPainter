@@ -12,6 +12,7 @@ import {
   StampsTab,
   SupportedLanguage,
 } from '../types/paint';
+import { trackFunction, trackWindowClose, trackWindowOpen } from '../utils/analytics';
 
 function getEmojiLabel(em: EmojiDefinition, lang: SupportedLanguage): string {
   if (lang === 'ru' || lang === 'uk' || lang === 'be' || lang === 'kk') {
@@ -51,6 +52,12 @@ export const StampsPopover: React.FC<StampsPopoverProps> = ({
   const catStripRef = useRef<HTMLDivElement | null>(null);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
+
+  useEffect(() => {
+    trackWindowOpen('stamps_popover', { active_tab: activeTab });
+    return () => trackWindowClose('stamps_popover');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const updateCatScrollArrows = useCallback(() => {
     const el = catStripRef.current;
@@ -147,6 +154,7 @@ export const StampsPopover: React.FC<StampsPopoverProps> = ({
               onClick={() => {
                 setActiveTab('icons');
                 setSearch('');
+                trackFunction('switch_stamps_tab', 'stamps', { tab: 'icons' });
               }}
               className={`min-h-[34px] px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
                 activeTab === 'icons'
@@ -166,6 +174,7 @@ export const StampsPopover: React.FC<StampsPopoverProps> = ({
               onClick={() => {
                 setActiveTab('emoji');
                 setSearch('');
+                trackFunction('switch_stamps_tab', 'stamps', { tab: 'emoji' });
               }}
               className={`min-h-[34px] px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
                 activeTab === 'emoji'
@@ -247,7 +256,10 @@ export const StampsPopover: React.FC<StampsPopoverProps> = ({
                     <button
                       key={cat.id}
                       type="button"
-                      onClick={() => setCategory(cat.id)}
+                      onClick={() => {
+                        setCategory(cat.id);
+                        trackFunction('filter_stamps_category', 'stamps', { tab: 'icons', category: cat.id });
+                      }}
                       className={`shrink-0 min-h-[32px] px-2.5 py-1 rounded-lg text-[11px] font-medium whitespace-nowrap transition-colors cursor-pointer ${
                         active
                           ? isDarkBg
@@ -268,7 +280,10 @@ export const StampsPopover: React.FC<StampsPopoverProps> = ({
                     <button
                       key={cat.id}
                       type="button"
-                      onClick={() => setEmojiCategory(cat.id)}
+                      onClick={() => {
+                        setEmojiCategory(cat.id);
+                        trackFunction('filter_stamps_category', 'stamps', { tab: 'emoji', category: cat.id });
+                      }}
                       className={`shrink-0 min-h-[32px] px-2.5 py-1 rounded-lg text-[11px] font-medium whitespace-nowrap transition-colors cursor-pointer ${
                         active
                           ? isDarkBg

@@ -8,7 +8,15 @@
     />
     <title>ZenPainter by RitmXoid — Drawing &amp; Sketching Studio</title>
     <meta name="author" content="RitmXoid" />
-    <meta name="app-version" content="1.03" />
+    <meta name="app-version" content="1.04" />
+    <!-- Google Tag Manager / Google Analytics -->
+    <script async src="https://www.googletagmanager.com/gtm.js?id=GTM-NTBW9FHG"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      window.dataLayer.push({ 'gtm.start': new Date().getTime(), event: 'gtm.js' });
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+    </script>
     <link
       rel="icon"
       type="image/svg+xml"
@@ -40,6 +48,14 @@
     </script>
   </head>
   <body>
+    <noscript
+      ><iframe
+        src="https://www.googletagmanager.com/ns.html?id=GTM-NTBW9FHG"
+        height="0"
+        width="0"
+        style="display:none;visibility:hidden"
+      ></iframe
+    ></noscript>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

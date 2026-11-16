@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React, { useEffect, useRef } from 'react';
 import {
   ArrowDown,
   ArrowUp,
@@ -25,6 +25,7 @@ import {
   SelectedObjectInfo,
 } from '../types/paint';
 import { downscaleImageFileToDataUrl } from '../utils/canvasHelpers';
+import { trackFunction, trackWindowClose, trackWindowOpen } from '../utils/analytics';
 
 interface ObjectEditorPopoverProps {
   t: (key: TranslationKey) => string;
@@ -77,6 +78,16 @@ export const ObjectEditorPopover: React.FC<ObjectEditorPopoverProps> = ({
   const patternLongPressTriggeredRef = useRef(false);
   const patternPressStartRef = useRef<{ x: number; y: number } | null>(null);
   const fillPhotoInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    trackWindowOpen('object_editor_popover', {
+      object_kind: info.kind,
+      is_fillable: info.kind === 'closedShape',
+      fill_mode: info.fill.mode,
+    });
+    return () => trackWindowClose('object_editor_popover');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const clearPatternLongPress = () => {
     if (patternLongPressTimerRef.current !== null) {
@@ -497,6 +508,11 @@ export const ObjectEditorPopover: React.FC<ObjectEditorPopoverProps> = ({
                   e.target.value = '';
                   if (!file) return;
                   void downscaleImageFileToDataUrl(file).then((photoDataUrl) => {
+                    trackFunction('upload_fill_photo', 'fill', {
+                      source: 'object_editor_popover',
+                      object_kind: info.kind,
+                      file_size_kb: Math.round(file.size / 1024),
+                    });
                     onUpdateFill({
                       ...info.fill,
                       mode: 'photo',

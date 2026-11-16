@@ -33,6 +33,7 @@ import {
   StrokeSettings,
 } from '../types/paint';
 import { buildPolygonPoints, downscaleImageFileToDataUrl } from '../utils/canvasHelpers';
+import { trackFunction, trackWindowClose, trackWindowOpen } from '../utils/analytics';
 
 interface ShapesPopoverProps {
   t: (key: TranslationKey) => string;
@@ -227,6 +228,16 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
   const fillPhotoInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
+    trackWindowOpen('shapes_popover', {
+      active_mode: activeMode,
+      is_editing_selection: Boolean(selectedInfo),
+      selection_kind: selectedInfo?.kind,
+    });
+    return () => trackWindowClose('shapes_popover');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
     if (selectedInfo?.isPolygonMorphable) {
       setPolygonsExpanded(true);
       setArrowsExpanded(false);
@@ -368,6 +379,18 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
 
   const applyStrokeUpdate = (patch: Partial<StrokeSettings>) => {
     onChangeStroke({ ...stroke, ...patch });
+    if (
+      !isEditingSelection &&
+      (patch.brushType !== undefined ||
+        patch.pattern !== undefined ||
+        patch.doubleLine !== undefined)
+    ) {
+      trackFunction('change_tool_stroke_style', 'tools', {
+        brush_type: patch.brushType,
+        pattern: patch.pattern,
+        double_line: patch.doubleLine,
+      });
+    }
     if (isEditingSelection) {
       onUpdateSelectedStroke?.({
         color: patch.color,
@@ -384,6 +407,15 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
     onChangeFill(nextFill);
     if (nextFill.mode === 'none' && stroke.width === 0) {
       onChangeStroke({ ...stroke, width: 1 });
+    }
+    if (
+      !isEditingSelection &&
+      (nextFill.mode !== fill.mode || nextFill.hatchPattern !== fill.hatchPattern)
+    ) {
+      trackFunction('change_tool_fill_style', 'tools', {
+        fill_mode: nextFill.mode,
+        hatch_pattern: nextFill.mode === 'pattern' ? nextFill.hatchPattern : undefined,
+      });
     }
     if (isEditingSelection && selectedInfo?.kind === 'closedShape') {
       onUpdateSelectedFill?.(nextFill);
@@ -402,6 +434,12 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
     }
     if (isEditingSelection && selectedInfo?.isRectEditable) {
       onUpdateSelectedGrid?.(clamped);
+    } else if (!isEditingSelection) {
+      trackFunction('change_tool_grid', 'tools', {
+        enabled: clamped.enabled,
+        rows: clamped.rows,
+        cols: clamped.cols,
+      });
     }
   };
 
@@ -1257,6 +1295,11 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
               e.target.value = '';
               if (!file) return;
               void downscaleImageFileToDataUrl(file).then((photoDataUrl) => {
+                trackFunction('upload_fill_photo', 'fill', {
+                  source: 'shapes_popover',
+                  editing_selection: Boolean(selectedInfo),
+                  file_size_kb: Math.round(file.size / 1024),
+                });
                 applyFillUpdate({
                   ...displayFill,
                   mode: 'photo',
