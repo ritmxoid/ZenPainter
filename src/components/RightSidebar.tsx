@@ -23,8 +23,9 @@ interface RightSidebarProps {
   onTogglePopover: (pop: ActivePopover) => void;
   activeMode: DrawMode;
   onSelectMode: (mode: DrawMode) => void;
-  onSelectAll: () => void;
+  onActivateLasso: () => void;
   onActivateEraser: () => void;
+  onRequestClearCanvas: () => void;
   onTriggerImageUpload: () => void;
   onUndo: () => void;
   onRedo: () => void;
@@ -41,8 +42,9 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
   onTogglePopover,
   activeMode,
   onSelectMode,
-  onSelectAll,
+  onActivateLasso,
   onActivateEraser,
+  onRequestClearCanvas,
   onTriggerImageUpload,
   onUndo,
   onRedo,
@@ -57,6 +59,11 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
   const selectLongPressedRef = useRef(false);
   const selectPressStartRef = useRef<{ x: number; y: number } | null>(null);
   const [selectPressing, setSelectPressing] = useState(false);
+
+  const eraserLongPressTimerRef = useRef<number | null>(null);
+  const eraserLongPressedRef = useRef(false);
+  const eraserPressStartRef = useRef<{ x: number; y: number } | null>(null);
+  const [eraserPressing, setEraserPressing] = useState(false);
 
   const handleUndoPointerDown = () => {
     longPressedRef.current = false;
@@ -110,7 +117,7 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
       if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
         navigator.vibrate(18);
       }
-      onSelectAll();
+      onActivateLasso();
     }, 420);
   };
 
@@ -129,7 +136,49 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
     onSelectMode('select');
   };
 
-  const isShapesToolActive = activeMode !== 'eraser';
+  const clearEraserLongPress = () => {
+    if (eraserLongPressTimerRef.current !== null) {
+      window.clearTimeout(eraserLongPressTimerRef.current);
+      eraserLongPressTimerRef.current = null;
+    }
+    eraserPressStartRef.current = null;
+    setEraserPressing(false);
+  };
+
+  const handleEraserPointerDown = (e: React.PointerEvent<HTMLButtonElement>) => {
+    e.stopPropagation();
+    clearEraserLongPress();
+    eraserLongPressedRef.current = false;
+    eraserPressStartRef.current = { x: e.clientX, y: e.clientY };
+    setEraserPressing(true);
+    eraserLongPressTimerRef.current = window.setTimeout(() => {
+      eraserLongPressedRef.current = true;
+      eraserLongPressTimerRef.current = null;
+      setEraserPressing(false);
+      if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+        navigator.vibrate(18);
+      }
+      onRequestClearCanvas();
+    }, 450);
+  };
+
+  const handleEraserPointerMove = (e: React.PointerEvent<HTMLButtonElement>) => {
+    const start = eraserPressStartRef.current;
+    if (start && Math.hypot(e.clientX - start.x, e.clientY - start.y) > 10) {
+      clearEraserLongPress();
+    }
+  };
+
+  const handleEraserClick = () => {
+    if (eraserLongPressedRef.current) {
+      eraserLongPressedRef.current = false;
+      return;
+    }
+    onActivateEraser();
+  };
+
+  const isShapesToolActive = activeMode !== 'eraser' && activeMode !== 'lasso';
+  const isLassoMode = activeMode === 'lasso';
 
   const eyeClass = isDarkBg
     ? 'bg-neutral-800/75 hover:bg-neutral-800 text-neutral-200 border-neutral-700/80 shadow-lg shadow-black/30'
@@ -233,15 +282,21 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
             <ImagePlus className="w-5 h-5" />
           </button>
 
-          {/* 5. Eraser */}
+          {/* 5. Eraser (long-press triggers Clear Canvas confirmation) */}
           <button
             type="button"
-            onClick={onActivateEraser}
-            title={t('toolEraser')}
+            onPointerDown={handleEraserPointerDown}
+            onPointerMove={handleEraserPointerMove}
+            onPointerUp={clearEraserLongPress}
+            onPointerCancel={clearEraserLongPress}
+            onPointerLeave={clearEraserLongPress}
+            onContextMenu={(e) => e.preventDefault()}
+            onClick={handleEraserClick}
+            title={`${t('toolEraser')} • ${t('deleteClearHint')}`}
             aria-label={t('toolEraser')}
-            className={`w-11 h-11 rounded-xl flex items-center justify-center transition-colors cursor-pointer shrink-0 ${
+            className={`w-11 h-11 rounded-xl flex items-center justify-center transition-all cursor-pointer shrink-0 touch-manipulation ${
               activePopover === 'eraser' || activeMode === 'eraser' ? btnActive : btnBase
-            }`}
+            } ${eraserPressing ? 'scale-92 ring-2 ring-red-500/70' : ''}`}
           >
             <Eraser className="w-5 h-5" />
           </button>
@@ -296,7 +351,7 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
           </button>
         </aside>
 
-        {/* Floating Quick-Select Button (shown below sidebar whenever any drawing/eraser tool is active; long-tap selects all) */}
+        {/* Floating Quick-Select Button (shown below sidebar whenever any drawing/eraser/lasso tool is active; long-tap activates marching-ants lasso) */}
         {activeMode !== 'select' && (
           <button
             type="button"
@@ -308,15 +363,38 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
             onTouchStart={(e) => e.stopPropagation()}
             onContextMenu={(e) => e.preventDefault()}
             onClick={handleSelectClick}
-            title={t('selectAllHint')}
-            aria-label={t('modeSelect')}
-            className={`w-14 h-14 rounded-2xl border backdrop-blur-md flex items-center justify-center shrink-0 transition-transform duration-150 cursor-pointer touch-manipulation ${barSurface} ${
-              isDarkBg
-                ? 'text-neutral-200 hover:text-white hover:bg-neutral-800/95'
-                : 'text-slate-600 hover:text-slate-900 hover:bg-white'
+            title={isLassoMode ? t('lassoHint') : t('selectLassoHint')}
+            aria-label={isLassoMode ? t('modeLasso') : t('modeSelect')}
+            className={`w-14 h-14 rounded-2xl border backdrop-blur-md flex items-center justify-center shrink-0 transition-all duration-150 cursor-pointer touch-manipulation ${
+              isLassoMode
+                ? 'bg-blue-600 border-blue-500 text-white shadow-lg shadow-blue-600/35 ring-2 ring-blue-400/50'
+                : `${barSurface} ${
+                    isDarkBg
+                      ? 'text-neutral-200 hover:text-white hover:bg-neutral-800/95'
+                      : 'text-slate-600 hover:text-slate-900 hover:bg-white'
+                  }`
             } ${selectPressing ? 'scale-92 ring-2 ring-blue-500/70' : 'active:scale-95'}`}
           >
-            <MousePointer2 className="w-6 h-6" />
+            {isLassoMode ? (
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                className="w-6 h-6"
+                aria-hidden="true"
+              >
+                <path
+                  d="M4.5 3.5L19.5 11.2L12.6 13.1L10.3 20.1L4.5 3.5Z"
+                  stroke="currentColor"
+                  strokeWidth="1.9"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeDasharray="3.4 2.6"
+                  className="zp-marching-arrow-stroke"
+                />
+              </svg>
+            ) : (
+              <MousePointer2 className="w-6 h-6" />
+            )}
           </button>
         )}
       </div>

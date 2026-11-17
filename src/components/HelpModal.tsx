@@ -3,22 +3,27 @@ import {
   BookOpen,
   ChevronLeft,
   ChevronRight,
+  Copy,
   Eraser,
-  Eye,
+  EyeOff,
   HelpCircle,
   Image as ImageIcon,
+  ImagePlus,
   Layers,
   Magnet,
   Maximize2,
   Minimize2,
   MoreHorizontal,
+  MoreVertical,
   MousePointer2,
   PaintBucket,
   Pause,
   Pencil,
   Play,
+  Redo2,
   RefreshCw,
   RotateCcw,
+  Scissors,
   Search,
   Shapes,
   Sparkles,
@@ -226,52 +231,265 @@ function drawSnapGlowRing(
   ctx.restore();
 }
 
-function drawCursorPointer(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  isPressed: boolean,
-  ringColor?: string,
-  ringProgress?: number
-) {
-  ctx.save();
-  if (ringColor && typeof ringProgress === 'number' && ringProgress > 0) {
-    ctx.beginPath();
-    ctx.arc(x, y, 16, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * clamp01(ringProgress));
-    ctx.strokeStyle = ringColor;
-    ctx.lineWidth = 3;
-    ctx.lineCap = 'round';
-    ctx.stroke();
-  } else if (isPressed) {
-    ctx.beginPath();
-    ctx.arc(x, y, 12, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(37, 99, 235, 0.22)';
-    ctx.fill();
+interface DemoCursorUiState {
+  curX: number;
+  curY: number;
+  pressed: boolean;
+  ringColor?: string;
+  ringProg?: number;
+  activeToolIdx: number;
+  highlightTool: boolean;
+}
+
+const DEMO_SIDEBAR_CENTER_X = 608;
+const DEMO_TOOL_CENTER_Y = [64, 99, 134, 169, 204, 241, 278] as const;
+
+function computeDemoCursorUiState(t: number): DemoCursorUiState {
+  // Chapter 8: UI Prototyping (24.6 .. 29.4s)
+  if (t >= 24.6) {
+    const localT = t - 24.6;
+    const px = 220;
+    const py = 54;
+    const pw = 186;
+    const ph = 276;
+    const rectDrawT = easeInOut(localT / 1.0);
+    const curW = lerp(14, pw, rectDrawT);
+    const curH = lerp(18, ph, rectDrawT);
+    const btnsCenterY = py + 238;
+    const btnCenterX = px + pw / 2;
+
+    let curX = px + curW;
+    let curY = py + curH;
+    let pressed = false;
+    let ringColor: string | undefined;
+    let ringProg: number | undefined;
+
+    if (localT < 1.0) {
+      curX = px + curW;
+      curY = py + curH;
+      pressed = true;
+    } else if (localT < 1.95) {
+      const drag = easeInOut((localT - 1.05) / 0.8);
+      curX = lerp(px + pw, px + pw - 22, drag);
+      curY = lerp(py, py + 22, drag);
+      pressed = true;
+      ringColor = '#F59E0B';
+      ringProg = clamp01((localT - 1.0) / 0.3);
+    } else if (localT < 3.1) {
+      const p = easeInOut((localT - 1.95) / 0.6);
+      curX = lerp(px + pw - 22, DEMO_SIDEBAR_CENTER_X, p);
+      curY = lerp(py + 22, DEMO_TOOL_CENTER_Y[2], p);
+      pressed = localT > 2.4 && localT < 2.6;
+    } else if (localT < 4.15) {
+      const p = easeInOut((localT - 3.1) / 0.85);
+      curX = lerp(btnCenterX - 50, btnCenterX + 50, p);
+      curY = btnsCenterY;
+      pressed = true;
+    } else {
+      const p = easeInOut((localT - 4.15) / 0.4);
+      curX = lerp(btnCenterX + 50, btnCenterX, p);
+      curY = btnsCenterY;
+      pressed = localT >= 4.25 && localT <= 4.45;
+    }
+
+    return {
+      curX,
+      curY,
+      pressed,
+      ringColor,
+      ringProg,
+      activeToolIdx: localT >= 2.0 ? 2 : 0,
+      highlightTool: true,
+    };
   }
 
-  ctx.translate(x, y);
-  ctx.scale(isPressed ? 0.9 : 1, isPressed ? 0.9 : 1);
-  ctx.beginPath();
-  ctx.moveTo(0, 0);
-  ctx.lineTo(0, 17);
-  ctx.lineTo(4.6, 13.3);
-  ctx.lineTo(8.3, 20.5);
-  ctx.lineTo(11, 19.2);
-  ctx.lineTo(7.2, 12);
-  ctx.lineTo(12.5, 11.4);
-  ctx.closePath();
+  // Chapter 7: Endpoint Snap — Flower Petals + Stem (20.2 .. 24.6s)
+  if (t >= 20.2) {
+    const localT = t - 20.2;
+    const flowerCx = 300;
+    const flowerCy = 136;
+    const petalAngles = [
+      -Math.PI / 2,
+      -Math.PI / 2 + (Math.PI * 2) / 5,
+      -Math.PI / 2 + (Math.PI * 4) / 5,
+      -Math.PI / 2 + (Math.PI * 6) / 5,
+      -Math.PI / 2 + (Math.PI * 8) / 5,
+    ];
+    const petalLen = 68;
+    const petalSpread = 0.42;
+    const stemSeparateStart = 2.25;
+    const stemDragStart = 2.95;
+    const stemDragEnd = 3.85;
+    const stemSnapped = localT >= stemDragEnd;
+    const fifthProg = clamp01((localT - 1.25) / 0.95);
 
-  ctx.shadowColor = 'rgba(15, 23, 42, 0.35)';
-  ctx.shadowBlur = 5;
-  ctx.shadowOffsetY = 2;
-  ctx.fillStyle = '#FFFFFF';
-  ctx.fill();
-  ctx.shadowColor = 'transparent';
-  ctx.lineWidth = 1.5;
-  ctx.strokeStyle = '#0F172A';
-  ctx.lineJoin = 'round';
-  ctx.stroke();
-  ctx.restore();
+    let curX = flowerCx;
+    let curY = flowerCy;
+    let pressed = false;
+
+    if (localT >= stemSeparateStart) {
+      const dragT = easeInOut((localT - stemDragStart) / (stemDragEnd - stemDragStart));
+      const snapTargetX = flowerCx;
+      const snapTargetY = flowerCy + 14;
+      const detachedTopX = 338;
+      const detachedTopY = 204;
+      if (localT < stemDragStart) {
+        const moveP = easeInOut((localT - 2.25) / 0.65);
+        curX = lerp(flowerCx, detachedTopX, moveP);
+        curY = lerp(flowerCy, detachedTopY, moveP);
+        pressed = false;
+      } else {
+        curX = lerp(detachedTopX, snapTargetX, dragT);
+        curY = lerp(detachedTopY, snapTargetY, dragT);
+        pressed = !stemSnapped;
+      }
+    } else if (fifthProg > 0) {
+      const pt = getPetalPoint(flowerCx, flowerCy, petalAngles[4], petalLen, petalSpread, fifthProg);
+      curX = pt.x;
+      curY = pt.y;
+      pressed = fifthProg < 0.99;
+    } else {
+      const idx = Math.min(3, Math.floor(localT / 0.3));
+      const pt = getPetalPoint(flowerCx, flowerCy, petalAngles[idx], petalLen, petalSpread, 0.5);
+      curX = pt.x;
+      curY = pt.y;
+      pressed = true;
+    }
+
+    return {
+      curX,
+      curY,
+      pressed,
+      activeToolIdx: 0,
+      highlightTool: true,
+    };
+  }
+
+  // Chapters 1-6 (0 .. 20.2s)
+  const drawProg = easeInOut(t / 2.45);
+  let blobCx = 230;
+  let blobCy = 185;
+  let blobScale = 1;
+  let blobAngle = 0;
+  if (t >= 6.7) {
+    const moveT = easeInOut((t - 6.9) / 0.85);
+    const scaleT = easeInOut((t - 7.85) / 0.85);
+    const rotT = easeInOut((t - 8.8) / 0.9);
+    blobCx = lerp(230, 172, moveT);
+    blobCy = lerp(185, 166, moveT);
+    blobScale = lerp(1, 1.12, scaleT);
+    blobAngle = lerp(0, -0.22, rotT);
+  }
+  const starCx = 396;
+  const starCy = 114;
+
+  let curX = 230;
+  let curY = 185;
+  let pressed = false;
+  let ringColor: string | undefined;
+  let ringProg: number | undefined;
+
+  if (t < 2.45) {
+    const idxF = drawProg * (ORGANIC_BLOB_PTS.length - 1);
+    const i0 = Math.floor(idxF);
+    const i1 = Math.min(ORGANIC_BLOB_PTS.length - 1, i0 + 1);
+    const f = idxF - i0;
+    curX = blobCx + lerp(ORGANIC_BLOB_PTS[i0].x, ORGANIC_BLOB_PTS[i1].x, f);
+    curY = blobCy + lerp(ORGANIC_BLOB_PTS[i0].y, ORGANIC_BLOB_PTS[i1].y, f);
+    pressed = true;
+  } else if (t < 3.6) {
+    const p = easeInOut((t - 2.45) / 0.8);
+    curX = lerp(blobCx + ORGANIC_BLOB_PTS[0].x, DEMO_SIDEBAR_CENTER_X, p);
+    curY = lerp(blobCy + ORGANIC_BLOB_PTS[0].y, DEMO_TOOL_CENTER_Y[0], p);
+    pressed = t > 3.25 && t < 3.45;
+  } else if (t < 4.5) {
+    const p = easeInOut((t - 3.6) / 0.55);
+    curX = lerp(DEMO_SIDEBAR_CENTER_X, 502, p);
+    curY = lerp(DEMO_TOOL_CENTER_Y[0], 92, p);
+    pressed = t > 4.15 && t < 4.35;
+  } else if (t < 5.4) {
+    const p = easeInOut((t - 4.5) / 0.55);
+    curX = lerp(502, 502, p);
+    curY = lerp(92, 186, p);
+    pressed = t > 5.05 && t < 5.25;
+  } else if (t < 6.7) {
+    const p = easeInOut((t - 5.4) / 0.55);
+    curX = lerp(502, 493, p);
+    curY = lerp(186, 130, p);
+    pressed = t > 5.95 && t < 6.2;
+  } else if (t < 7.8) {
+    const p = easeInOut((t - 6.7) / 0.35);
+    curX = lerp(493, blobCx, p);
+    curY = lerp(130, blobCy, p);
+    pressed = t > 6.9;
+  } else if (t < 8.75) {
+    const p = easeInOut((t - 7.8) / 0.25);
+    const hx = blobCx + 82 * blobScale;
+    const hy = blobCy + 66 * blobScale;
+    curX = t < 8.05 ? lerp(blobCx, hx, p) : hx;
+    curY = t < 8.05 ? lerp(blobCy, hy, p) : hy;
+    pressed = t > 8.0;
+  } else if (t < 9.9) {
+    const p = easeInOut((t - 8.75) / 0.25);
+    const rx = blobCx + Math.sin(-blobAngle) * -(66 * blobScale + 21);
+    const ry = blobCy + Math.cos(-blobAngle) * -(66 * blobScale + 21);
+    curX = t < 9.0 ? lerp(blobCx + 82, rx, p) : rx;
+    curY = t < 9.0 ? lerp(blobCy + 66, ry, p) : ry;
+    pressed = t > 8.95;
+  } else if (t < 11.35) {
+    const p = easeInOut((t - 9.9) / 0.65);
+    curX = lerp(blobCx, starCx + 56, p);
+    curY = lerp(blobCy - 85, starCy - 56, p);
+    if (t >= 10.65) {
+      pressed = true;
+      ringColor = '#F59E0B';
+      ringProg = (t - 10.65) / 0.55;
+    }
+  } else if (t < 13.5) {
+    const dragT = easeInOut((t - 11.35) / 1.55);
+    curX = lerp(starCx + 56, starCx + 24, dragT);
+    curY = lerp(starCy - 56, starCy - 24, dragT);
+    pressed = t < 13.0;
+    ringColor = t < 13.0 ? '#F59E0B' : undefined;
+    ringProg = t < 13.0 ? 1 : undefined;
+  } else if (t < 14.9) {
+    const p = easeInOut((t - 13.5) / 0.55);
+    curX = lerp(starCx + 24, DEMO_SIDEBAR_CENTER_X, p);
+    curY = lerp(starCy - 24, DEMO_TOOL_CENTER_Y[2], p);
+    pressed = t > 14.05 && t < 14.3;
+  } else if (t < 16.6) {
+    const p = easeInOut((t - 14.9) / 0.45);
+    curX = lerp(DEMO_SIDEBAR_CENTER_X, DEMO_SIDEBAR_CENTER_X, p);
+    curY = lerp(DEMO_TOOL_CENTER_Y[2], DEMO_TOOL_CENTER_Y[3], p);
+    pressed = t > 15.15 && t < 15.45;
+  } else if (t < 18.0) {
+    const p = easeInOut((t - 16.6) / 0.5);
+    curX = lerp(DEMO_SIDEBAR_CENTER_X, DEMO_SIDEBAR_CENTER_X, p);
+    curY = lerp(DEMO_TOOL_CENTER_Y[3], DEMO_TOOL_CENTER_Y[1], p);
+    pressed = t > 17.1 && t < 17.35;
+  } else {
+    const p = easeInOut((t - 18.0) / 1.45);
+    curX = lerp(293, 326, p);
+    curY = lerp(272, 266, p);
+    pressed = t < 19.6;
+  }
+
+  return {
+    curX,
+    curY,
+    pressed,
+    ringColor,
+    ringProg,
+    activeToolIdx:
+      t >= 16.6 && t < 18.0
+        ? 1
+        : t >= 14.8 && t < 16.6
+          ? 3
+          : t >= 13.5 && t < 14.8
+            ? 2
+            : 0,
+    highlightTool: (t >= 3.1 && t < 6.7) || (t >= 13.5 && t < 17.8),
+  };
 }
 
 function getPetalPoint(
@@ -342,6 +560,7 @@ const GUIDE_VISUALS: GuideVisualMeta[] = [
   { icon: <ImageIcon className="w-4 h-4" />, accent: 'text-teal-500 bg-teal-500/12' },
   { icon: <Eraser className="w-4 h-4" />, accent: 'text-rose-500 bg-rose-500/12' },
   { icon: <MoreHorizontal className="w-4 h-4" />, accent: 'text-slate-500 bg-slate-500/12' },
+  { icon: <Scissors className="w-4 h-4" />, accent: 'text-sky-500 bg-sky-500/12' },
 ];
 
 export const HelpModal: React.FC<HelpModalProps> = ({
@@ -447,14 +666,6 @@ export const HelpModal: React.FC<HelpModalProps> = ({
     }
 
     const t = timeSec;
-
-    let curX = 230;
-    let curY = 185;
-    let pressed = false;
-    let ringColor: string | undefined;
-    let ringProg: number | undefined;
-    let activeToolIdx = 0;
-    let highlightTool = false;
 
     // =========================================================================
     // CHAPTERS 1-6 (0.0 .. 20.2s)
@@ -715,7 +926,7 @@ export const HelpModal: React.FC<HelpModalProps> = ({
       if (t >= 3.35 && t <= 6.65) {
         const popAlpha =
           t < 3.65 ? (t - 3.35) / 0.3 : t > 6.35 ? (6.65 - t) / 0.3 : 1;
-        const px = 420;
+        const px = 412;
         const py = 54;
         const pw = 162;
         const ph = 186;
@@ -777,102 +988,6 @@ export const HelpModal: React.FC<HelpModalProps> = ({
         ctx.font = '500 9.5px Inter, sans-serif';
         ctx.fillText(copy.demoBorderZero, px + 12, py + 166, pw - 24);
         ctx.restore();
-      }
-
-      // Sidebar active highlight + Cursor coordinates for Steps 1-6
-      activeToolIdx =
-        t >= 16.6 && t < 18.0
-          ? 1
-          : t >= 14.8 && t < 16.6
-            ? 3
-            : t >= 13.5 && t < 14.8
-              ? 2
-              : 0;
-      highlightTool = (t >= 3.1 && t < 6.7) || (t >= 13.5 && t < 17.8);
-
-      if (t < 2.45) {
-        const idxF = drawProg * (ORGANIC_BLOB_PTS.length - 1);
-        const i0 = Math.floor(idxF);
-        const i1 = Math.min(ORGANIC_BLOB_PTS.length - 1, i0 + 1);
-        const f = idxF - i0;
-        curX = blobCx + lerp(ORGANIC_BLOB_PTS[i0].x, ORGANIC_BLOB_PTS[i1].x, f);
-        curY = blobCy + lerp(ORGANIC_BLOB_PTS[i0].y, ORGANIC_BLOB_PTS[i1].y, f);
-        pressed = true;
-      } else if (t < 3.6) {
-        const p = easeInOut((t - 2.45) / 0.8);
-        curX = lerp(blobCx + ORGANIC_BLOB_PTS[0].x, 611, p);
-        curY = lerp(blobCy + ORGANIC_BLOB_PTS[0].y, 74, p);
-        pressed = t > 3.25 && t < 3.45;
-      } else if (t < 4.5) {
-        const p = easeInOut((t - 3.6) / 0.55);
-        curX = lerp(611, 510, p);
-        curY = lerp(74, 92, p);
-        pressed = t > 4.15 && t < 4.35;
-      } else if (t < 5.4) {
-        const p = easeInOut((t - 4.5) / 0.55);
-        curX = lerp(510, 510, p);
-        curY = lerp(92, 186, p);
-        pressed = t > 5.05 && t < 5.25;
-      } else if (t < 6.7) {
-        const p = easeInOut((t - 5.4) / 0.55);
-        curX = lerp(510, 501, p);
-        curY = lerp(186, 130, p);
-        pressed = t > 5.95 && t < 6.2;
-      } else if (t < 7.8) {
-        const p = easeInOut((t - 6.7) / 0.35);
-        curX = lerp(501, blobCx, p);
-        curY = lerp(130, blobCy, p);
-        pressed = t > 6.9;
-      } else if (t < 8.75) {
-        const p = easeInOut((t - 7.8) / 0.25);
-        const hx = blobCx + 82 * blobScale;
-        const hy = blobCy + 66 * blobScale;
-        curX = t < 8.05 ? lerp(blobCx, hx, p) : hx;
-        curY = t < 8.05 ? lerp(blobCy, hy, p) : hy;
-        pressed = t > 8.0;
-      } else if (t < 9.9) {
-        const p = easeInOut((t - 8.75) / 0.25);
-        const rx = blobCx + Math.sin(-blobAngle) * -(66 * blobScale + 21);
-        const ry = blobCy + Math.cos(-blobAngle) * -(66 * blobScale + 21);
-        curX = t < 9.0 ? lerp(blobCx + 82, rx, p) : rx;
-        curY = t < 9.0 ? lerp(blobCy + 66, ry, p) : ry;
-        pressed = t > 8.95;
-      } else if (t < 11.35) {
-        const p = easeInOut((t - 9.9) / 0.65);
-        curX = lerp(blobCx, starCx + 56, p);
-        curY = lerp(blobCy - 85, starCy - 56, p);
-        if (t >= 10.65) {
-          pressed = true;
-          ringColor = '#F59E0B';
-          ringProg = (t - 10.65) / 0.55;
-        }
-      } else if (t < 13.5) {
-        const dragT = easeInOut((t - 11.35) / 1.55);
-        curX = lerp(starCx + 56, starCx + 24, dragT);
-        curY = lerp(starCy - 56, starCy - 24, dragT);
-        pressed = t < 13.0;
-        ringColor = t < 13.0 ? '#F59E0B' : undefined;
-        ringProg = t < 13.0 ? 1 : undefined;
-      } else if (t < 14.9) {
-        const p = easeInOut((t - 13.5) / 0.55);
-        curX = lerp(starCx + 24, 611, p);
-        curY = lerp(starCy - 24, 154, p);
-        pressed = t > 14.05 && t < 14.3;
-      } else if (t < 16.6) {
-        const p = easeInOut((t - 14.9) / 0.45);
-        curX = lerp(611, 611, p);
-        curY = lerp(154, 194, p);
-        pressed = t > 15.15 && t < 15.45;
-      } else if (t < 18.0) {
-        const p = easeInOut((t - 16.6) / 0.5);
-        curX = lerp(611, 611, p);
-        curY = lerp(194, 114, p);
-        pressed = t > 17.1 && t < 17.35;
-      } else {
-        const p = easeInOut((t - 18.0) / 1.45);
-        curX = lerp(293, 326, p);
-        curY = lerp(272, 266, p);
-        pressed = t < 19.6;
       }
 
       ctx.restore();
@@ -1021,49 +1136,8 @@ export const HelpModal: React.FC<HelpModalProps> = ({
           const glow = localT < 3.9 ? 1 : clamp01((4.35 - localT) / 0.45);
           drawSnapGlowRing(ctx, snapTargetX, snapTargetY, glow);
         }
-
-        // Cursor trajectory for stem drag
-        if (localT < stemDragStart) {
-          const moveP = easeInOut((localT - 2.25) / 0.65);
-          curX = lerp(flowerCx, detachedTopX, moveP);
-          curY = lerp(flowerCy, detachedTopY, moveP);
-          pressed = false;
-        } else {
-          curX = curStemTopX;
-          curY = curStemTopY;
-          pressed = !stemSnapped;
-        }
-      } else {
-        // Cursor drawing 5th petal and snapping to center
-        if (fifthProg > 0) {
-          const pt = getPetalPoint(
-            flowerCx,
-            flowerCy,
-            petalAngles[4],
-            petalLen,
-            petalSpread,
-            fifthProg
-          );
-          curX = pt.x;
-          curY = pt.y;
-          pressed = fifthProg < 0.99;
-          if (fifthProg >= 0.85) {
-            drawSnapGlowRing(ctx, flowerCx, flowerCy, clamp01((fifthProg - 0.85) / 0.15));
-          }
-        } else {
-          const idx = Math.min(3, Math.floor(localT / 0.3));
-          const pt = getPetalPoint(
-            flowerCx,
-            flowerCy,
-            petalAngles[idx],
-            petalLen,
-            petalSpread,
-            0.5
-          );
-          curX = pt.x;
-          curY = pt.y;
-          pressed = true;
-        }
+      } else if (fifthProg >= 0.85) {
+        drawSnapGlowRing(ctx, flowerCx, flowerCy, clamp01((fifthProg - 0.85) / 0.15));
       }
 
       // Snap pill indicator
@@ -1083,8 +1157,6 @@ export const HelpModal: React.FC<HelpModalProps> = ({
         ctx.restore();
       }
 
-      activeToolIdx = 0;
-      highlightTool = true;
       ctx.restore();
     }
 
@@ -1273,100 +1345,16 @@ export const HelpModal: React.FC<HelpModalProps> = ({
         ctx.restore();
       }
 
-      // Cursor movement across Step 8
-      if (localT < 1.0) {
-        curX = px + curW;
-        curY = py + curH;
-        pressed = true;
-      } else if (localT < 1.95) {
-        const drag = easeInOut((localT - 1.05) / 0.8);
-        curX = lerp(px + pw, px + pw - 22, drag);
-        curY = lerp(py, py + 22, drag);
-        pressed = true;
-        ringColor = '#F59E0B';
-        ringProg = clamp01((localT - 1.0) / 0.3);
-      } else if (localT < 3.1) {
-        const p = easeInOut((localT - 1.95) / 0.6);
-        curX = lerp(px + pw - 22, 611, p);
-        curY = lerp(py + 22, 154, p);
-        pressed = localT > 2.4 && localT < 2.6;
-      } else if (localT < 4.15) {
-        const p = easeInOut((localT - 3.1) / 0.85);
-        curX = lerp(btnCenterX - 50, btnCenterX + 50, p);
-        curY = btnsCenterY;
-        pressed = true;
-      } else {
-        const p = easeInOut((localT - 4.15) / 0.4);
-        curX = lerp(btnCenterX + 50, btnCenterX, p);
-        curY = btnsCenterY;
-        pressed = localT >= 4.25 && localT <= 4.45;
-      }
-
-      activeToolIdx = localT >= 2.0 ? 2 : 0;
-      highlightTool = true;
       ctx.restore();
     }
 
-    // Mini Right Toolbar Overlay inside Demo Stage (always visible on top)
-    const barX = 594;
-    const barY = 48;
-    const barW = 34;
-    const barH = 264;
-    ctx.save();
-    roundRectPath(ctx, barX, barY, barW, barH, 14);
-    ctx.fillStyle = isDarkBg ? 'rgba(23, 23, 23, 0.92)' : 'rgba(255, 255, 255, 0.94)';
-    ctx.fill();
-    ctx.strokeStyle = isDarkBg ? 'rgba(64,64,64,0.85)' : 'rgba(226,232,240,0.95)';
-    ctx.lineWidth = 1.2;
-    ctx.stroke();
-
-    const toolColors = ['#2563EB', '#7C3AED', '#EC4899', '#0D9488', '#F43F5E', '#64748B'];
-    for (let i = 0; i < 6; i++) {
-      const iy = barY + 14 + i * 40;
-      const isAct = i === activeToolIdx && highlightTool;
-      if (isAct) {
-        roundRectPath(ctx, barX + 5, iy, 24, 24, 7);
-        ctx.fillStyle = toolColors[i];
-        ctx.fill();
-      }
-      ctx.strokeStyle = isAct ? '#FFFFFF' : isDarkBg ? '#CBD5E1' : '#475569';
-      ctx.lineWidth = 1.7;
-      const cx = barX + 17;
-      const cy = iy + 12;
-      if (i === 0) {
-        ctx.strokeRect(cx - 5, cy - 5, 10, 10);
-      } else if (i === 1) {
-        ctx.font = '700 12px Inter, sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillStyle = ctx.strokeStyle;
-        ctx.fillText('T', cx, cy + 0.5);
-      } else if (i === 2) {
-        ctx.beginPath();
-        ctx.arc(cx, cy, 5, 0, Math.PI * 2);
-        ctx.stroke();
-      } else if (i === 3) {
-        ctx.strokeRect(cx - 5, cy - 4, 10, 8);
-      } else if (i === 4) {
-        ctx.beginPath();
-        ctx.moveTo(cx - 4, cy + 4);
-        ctx.lineTo(cx + 4, cy - 4);
-        ctx.stroke();
-      } else {
-        for (const dx of [-4, 0, 4]) {
-          ctx.beginPath();
-          ctx.arc(cx + dx, cy, 1.2, 0, Math.PI * 2);
-          ctx.fillStyle = ctx.strokeStyle;
-          ctx.fill();
-        }
-      }
-    }
-    ctx.restore();
-
-    drawCursorPointer(ctx, curX, curY, pressed, ringColor, ringProg);
-
     ctx.restore();
   }, [activeTab, copy, isDarkBg, timeSec]);
+
+  const demoUi = useMemo(
+    () => (activeTab === 'demo' ? computeDemoCursorUiState(timeSec) : null),
+    [activeTab, timeSec]
+  );
 
   const guideItems = useMemo(
     () =>
@@ -1455,15 +1443,20 @@ export const HelpModal: React.FC<HelpModalProps> = ({
                 <h2 className="text-sm sm:text-base font-bold tracking-tight">
                   ZenPainter
                 </h2>
-                <span
-                  className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${
+                <a
+                  href="https://ritmxoid.com"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={() => trackFunction('open_author_website', 'help')}
+                  title="https://ritmxoid.com"
+                  className={`px-2 py-0.5 rounded-full text-[10px] font-semibold inline-flex items-center transition-colors cursor-pointer ${
                     isDarkBg
-                      ? 'bg-sky-500/15 text-sky-300 border border-sky-500/30'
-                      : 'bg-sky-50 text-sky-700 border border-sky-200'
+                      ? 'bg-sky-500/15 text-sky-300 border border-sky-500/30 hover:bg-sky-500/25 hover:text-sky-200'
+                      : 'bg-sky-50 text-sky-700 border border-sky-200 hover:bg-sky-100 hover:text-sky-800'
                   }`}
                 >
                   by RitmXoid
-                </span>
+                </a>
               </div>
               <p className={`text-[11px] truncate ${mutedText}`}>
                 {copy.headerSubtitle}
@@ -1531,70 +1524,258 @@ export const HelpModal: React.FC<HelpModalProps> = ({
         <div className="flex-1 min-h-0 bp-scroll overflow-y-auto p-3 sm:p-4 flex flex-col gap-3">
           {activeTab === 'demo' ? (
             <>
-              {/* Animated Canvas Showcase Stage */}
+              {/* Animated Canvas Showcase Stage with Genuine Scaled RightSidebar Replica */}
               <div
                 dir="ltr"
+                style={isFullscreenDemo ? { containerType: 'size' } : undefined}
                 className={`relative rounded-2xl border overflow-hidden flex items-center justify-center ${
-                  isFullscreenDemo ? 'flex-1 min-h-[240px]' : ''
+                  isFullscreenDemo ? 'flex-1 min-h-[240px]' : 'w-full aspect-[16/9]'
                 } ${isDarkBg ? 'border-neutral-700 bg-neutral-950' : 'border-slate-200 bg-slate-50'}`}
               >
-                <canvas
-                  ref={canvasRef}
-                  className={
-                    isFullscreenDemo
-                      ? 'absolute inset-0 w-full h-full object-contain block'
-                      : 'w-full aspect-[16/9] block'
-                  }
-                />
-
-                {/* Compact Semi-Transparent Step Caption Pill (non-obstructive) */}
+                {/* Locked 16:9 Coordinate Stage so Canvas, Real Toolbar & SVG Cursor Stay 1:1 Aligned */}
                 <div
-                  dir={lang === 'ar' ? 'rtl' : 'ltr'}
-                  className={`absolute top-2 left-2 max-w-[68%] px-2.5 py-1 rounded-xl border backdrop-blur-sm pointer-events-none ${
-                    isDarkBg
-                      ? 'bg-neutral-900/45 border-neutral-600/45 text-neutral-100'
-                      : 'bg-white/45 border-slate-300/60 text-slate-900'
-                  }`}
-                >
-                  <div className="text-[10.5px] font-bold text-blue-500 leading-tight truncate">
-                    {activeStep.title}
-                  </div>
-                  <div className={`text-[9.5px] leading-tight truncate ${isDarkBg ? 'text-neutral-200/85' : 'text-slate-700/90'}`}>
-                    {activeStep.desc}
-                  </div>
-                </div>
-
-                {/* Top-Right Fullscreen Demo Toggle Button */}
-                <button
-                  type="button"
-                  onClick={() =>
-                    setIsFullscreenDemo((f) => {
-                      const next = !f;
-                      trackFunction('help_demo_fullscreen', 'help', { fullscreen: next });
-                      return next;
-                    })
+                  style={
+                    isFullscreenDemo
+                      ? {
+                          width: 'min(100cqw, calc(100cqh * 16 / 9))',
+                          height: 'min(100cqh, calc(100cqw * 9 / 16))',
+                          containerType: 'size',
+                        }
+                      : { containerType: 'size' }
                   }
-                  title={isFullscreenDemo ? copy.fullscreenExit : copy.fullscreenEnter}
-                  aria-label={isFullscreenDemo ? copy.fullscreenExit : copy.fullscreenEnter}
-                  className={`absolute top-2 right-2 w-8 h-8 rounded-xl border backdrop-blur-sm flex items-center justify-center transition-colors cursor-pointer ${
-                    isDarkBg
-                      ? 'bg-neutral-900/55 border-neutral-600/50 text-neutral-100 hover:bg-neutral-800/80'
-                      : 'bg-white/60 border-slate-300/70 text-slate-700 hover:bg-white/90'
-                  }`}
+                  className="relative w-full h-full overflow-hidden"
                 >
-                  {isFullscreenDemo ? (
-                    <Minimize2 className="w-4 h-4" />
-                  ) : (
-                    <Maximize2 className="w-4 h-4" />
-                  )}
-                </button>
+                  <canvas ref={canvasRef} className="w-full h-full block" />
 
-                {/* Progress Bar along bottom of canvas */}
-                <div className="absolute bottom-0 left-0 right-0 h-1 bg-black/10 dark:bg-white/10">
+                  {/* Real Scaled ZenPainter RightSidebar Replica */}
+                  {demoUi && (
+                    <div
+                      aria-hidden="true"
+                      className="pointer-events-none select-none absolute inset-0 z-10"
+                    >
+                      {/* Authentic Top-Right Eye Trigger */}
+                      <div
+                        style={{
+                          top: '2.78%',
+                          right: '1.875%',
+                          width: '4.375%',
+                          height: '7.78%',
+                          borderRadius: '1.4cqw',
+                        }}
+                        className={`absolute border backdrop-blur-md flex items-center justify-center shadow-sm ${
+                          isDarkBg
+                            ? 'bg-neutral-800/95 text-white border-neutral-600'
+                            : 'bg-white/95 text-slate-900 border-slate-300'
+                        }`}
+                      >
+                        <EyeOff style={{ width: '2cqw', height: '2cqw' }} />
+                      </div>
+
+                      {/* Authentic 7-Button Vertical RightSidebar + Quick-Select Button */}
+                      <div
+                        style={{
+                          top: '12.22%',
+                          right: '1.875%',
+                          width: '6.25%',
+                          gap: '0.94cqw',
+                        }}
+                        className="absolute flex flex-col items-center"
+                      >
+                        <div
+                          style={{
+                            width: '100%',
+                            padding: '0.625cqw',
+                            gap: '0.47cqw',
+                            borderRadius: '1.7cqw',
+                          }}
+                          className={`border backdrop-blur-md flex flex-col items-center ${
+                            isDarkBg
+                              ? 'bg-neutral-900/92 border-neutral-700/85 shadow-lg shadow-black/45'
+                              : 'bg-white/94 border-slate-200/95 shadow-lg shadow-slate-900/10'
+                          }`}
+                        >
+                          {[
+                            { idx: 0, Icon: Shapes },
+                            { idx: 1, Icon: Type },
+                            { idx: 2, Icon: Stamp },
+                            { idx: 3, Icon: ImagePlus },
+                            { idx: 4, Icon: Eraser },
+                          ].map(({ idx, Icon }) => {
+                            const isAct =
+                              demoUi.highlightTool && demoUi.activeToolIdx === idx;
+                            return (
+                              <div
+                                key={idx}
+                                style={{
+                                  width: '5cqw',
+                                  height: '5cqw',
+                                  borderRadius: '1.1cqw',
+                                }}
+                                className={`flex items-center justify-center transition-colors ${
+                                  isAct
+                                    ? 'bg-blue-600 text-white shadow-sm'
+                                    : isDarkBg
+                                      ? 'text-neutral-300'
+                                      : 'text-slate-600'
+                                }`}
+                              >
+                                <Icon style={{ width: '2.35cqw', height: '2.35cqw' }} />
+                              </div>
+                            );
+                          })}
+
+                          {/* 6. Undo / Redo Slot */}
+                          <div
+                            style={{
+                              width: '5cqw',
+                              height: '5.6cqw',
+                              gap: '0.2cqw',
+                            }}
+                            className={`flex flex-col items-center justify-center ${
+                              isDarkBg ? 'text-neutral-300' : 'text-slate-600'
+                            }`}
+                          >
+                            <Undo2 style={{ width: '2.1cqw', height: '2.1cqw' }} />
+                            <Redo2
+                              style={{ width: '1.5cqw', height: '1.5cqw' }}
+                              className="opacity-45"
+                            />
+                          </div>
+
+                          {/* 7. More Actions */}
+                          <div
+                            style={{
+                              width: '5cqw',
+                              height: '5cqw',
+                              borderRadius: '1.1cqw',
+                            }}
+                            className={`flex items-center justify-center ${
+                              isDarkBg ? 'text-neutral-300' : 'text-slate-600'
+                            }`}
+                          >
+                            <MoreVertical style={{ width: '2.35cqw', height: '2.35cqw' }} />
+                          </div>
+                        </div>
+
+                        {/* Floating Quick-Select Button Underneath */}
+                        <div
+                          style={{
+                            width: '5.8cqw',
+                            height: '5.8cqw',
+                            borderRadius: '1.5cqw',
+                          }}
+                          className={`border backdrop-blur-md flex items-center justify-center shadow-md ${
+                            !demoUi.highlightTool
+                              ? 'bg-blue-600 border-blue-500 text-white'
+                              : isDarkBg
+                                ? 'bg-neutral-900/92 border-neutral-700/85 text-neutral-200'
+                                : 'bg-white/94 border-slate-200/95 text-slate-600'
+                          }`}
+                        >
+                          <MousePointer2 style={{ width: '2.5cqw', height: '2.5cqw' }} />
+                        </div>
+                      </div>
+
+                      {/* Animated Demo Cursor SVG Above Canvas & Real Toolbar */}
+                      <svg
+                        viewBox="0 0 640 360"
+                        className="absolute inset-0 w-full h-full pointer-events-none z-20"
+                      >
+                        <defs>
+                          <filter id="zp-demo-cur-shadow" x="-30%" y="-30%" width="180%" height="180%">
+                            <feDropShadow dx="0" dy="2" stdDeviation="2" floodColor="#0F172A" floodOpacity="0.35" />
+                          </filter>
+                        </defs>
+                        {demoUi.ringColor &&
+                        typeof demoUi.ringProg === 'number' &&
+                        demoUi.ringProg > 0 ? (
+                          <circle
+                            cx={demoUi.curX}
+                            cy={demoUi.curY}
+                            r={16}
+                            fill="none"
+                            stroke={demoUi.ringColor}
+                            strokeWidth={3}
+                            strokeLinecap="round"
+                            strokeDasharray={`${2 * Math.PI * 16}`}
+                            strokeDashoffset={`${2 * Math.PI * 16 * (1 - clamp01(demoUi.ringProg))}`}
+                            transform={`rotate(-90 ${demoUi.curX} ${demoUi.curY})`}
+                          />
+                        ) : demoUi.pressed ? (
+                          <circle
+                            cx={demoUi.curX}
+                            cy={demoUi.curY}
+                            r={12}
+                            fill="rgba(37, 99, 235, 0.24)"
+                          />
+                        ) : null}
+                        <g
+                          transform={`translate(${demoUi.curX}, ${demoUi.curY}) scale(${
+                            demoUi.pressed ? 0.9 : 1
+                          })`}
+                          filter="url(#zp-demo-cur-shadow)"
+                        >
+                          <path
+                            d="M 0 0 L 0 17 L 4.6 13.3 L 8.3 20.5 L 11 19.2 L 7.2 12 L 12.5 11.4 Z"
+                            fill="#FFFFFF"
+                            stroke="#0F172A"
+                            strokeWidth={1.5}
+                            strokeLinejoin="round"
+                          />
+                        </g>
+                      </svg>
+                    </div>
+                  )}
+
+                  {/* Compact Semi-Transparent Step Caption Pill (non-obstructive) */}
                   <div
-                    className="h-full bg-gradient-to-r from-sky-500 via-blue-600 to-amber-500 transition-[width] duration-75"
-                    style={{ width: `${(timeSec / TOTAL_DEMO_SEC) * 100}%` }}
-                  />
+                    dir={lang === 'ar' ? 'rtl' : 'ltr'}
+                    className={`absolute top-2 left-2 z-30 max-w-[68%] px-2.5 py-1 rounded-xl border backdrop-blur-sm pointer-events-none ${
+                      isDarkBg
+                        ? 'bg-neutral-900/45 border-neutral-600/45 text-neutral-100'
+                        : 'bg-white/45 border-slate-300/60 text-slate-900'
+                    }`}
+                  >
+                    <div className="text-[10.5px] font-bold text-blue-500 leading-tight truncate">
+                      {activeStep.title}
+                    </div>
+                    <div className={`text-[9.5px] leading-tight truncate ${isDarkBg ? 'text-neutral-200/85' : 'text-slate-700/90'}`}>
+                      {activeStep.desc}
+                    </div>
+                  </div>
+
+                  {/* Fullscreen Demo Toggle Button (bottom-left so top-right authentic Eye trigger is clear) */}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setIsFullscreenDemo((f) => {
+                        const next = !f;
+                        trackFunction('help_demo_fullscreen', 'help', { fullscreen: next });
+                        return next;
+                      })
+                    }
+                    title={isFullscreenDemo ? copy.fullscreenExit : copy.fullscreenEnter}
+                    aria-label={isFullscreenDemo ? copy.fullscreenExit : copy.fullscreenEnter}
+                    className={`absolute bottom-2.5 left-2 z-30 w-8 h-8 rounded-xl border backdrop-blur-sm flex items-center justify-center transition-colors cursor-pointer ${
+                      isDarkBg
+                        ? 'bg-neutral-900/65 border-neutral-600/60 text-neutral-100 hover:bg-neutral-800/90'
+                        : 'bg-white/75 border-slate-300/80 text-slate-700 hover:bg-white'
+                    }`}
+                  >
+                    {isFullscreenDemo ? (
+                      <Minimize2 className="w-4 h-4" />
+                    ) : (
+                      <Maximize2 className="w-4 h-4" />
+                    )}
+                  </button>
+
+                  {/* Progress Bar along bottom of canvas */}
+                  <div className="absolute bottom-0 left-0 right-0 z-30 h-1 bg-black/10 dark:bg-white/10">
+                    <div
+                      className="h-full bg-gradient-to-r from-sky-500 via-blue-600 to-amber-500 transition-[width] duration-75"
+                      style={{ width: `${(timeSec / TOTAL_DEMO_SEC) * 100}%` }}
+                    />
+                  </div>
                 </div>
               </div>
 
@@ -1792,10 +1973,15 @@ export const HelpModal: React.FC<HelpModalProps> = ({
                 </span>
                 <span>• <b>{copy.shortcutRmbKey}</b> — {copy.shortcutRmbDesc}</span>
                 <span>• <b>Ctrl+Z / Ctrl+Y</b> — {copy.shortcutUndoDesc}</span>
-                <span>• <b>Space + Drag</b> — {copy.shortcutPanDesc}</span>
-                <span>• <b>Delete</b> — {copy.shortcutDeleteDesc}</span>
                 <span className="flex items-center gap-1">
-                  • <Eye className="w-3 h-3" /> {copy.shortcutPin}
+                  • <Copy className="w-3 h-3" /> <b>Ctrl+C / Ctrl+V</b> — {copy.shortcutCopyPasteDesc}
+                </span>
+                <span>• <b>{copy.shortcutPanKey}</b> — {copy.shortcutPanDesc}</span>
+                <span>• <b>Delete</b> — {copy.shortcutDeleteDesc}</span>
+                <span>• <b>{copy.shortcutSelectHold}</b></span>
+                <span>• <b>{copy.shortcutDeleteHold}</b></span>
+                <span className="flex items-center gap-1">
+                  • <EyeOff className="w-3 h-3" /> {copy.shortcutPin}
                 </span>
                 <span className="flex items-center gap-1">
                   • <Magnet className="w-3 h-3" /> {copy.shortcutSnap}

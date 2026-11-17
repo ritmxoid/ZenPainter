@@ -1,5 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, Copy, Layers, Pencil, Trash2, X } from 'lucide-react';
+import {
+  Check,
+  ClipboardPaste,
+  Copy,
+  Layers,
+  Pencil,
+  RotateCw,
+  Scissors,
+  Trash2,
+  X,
+} from 'lucide-react';
 import { ActionsPopover } from './components/ActionsPopover';
 import { EraserPopover } from './components/EraserPopover';
 import { HelpModal } from './components/HelpModal';
@@ -71,6 +81,11 @@ import {
   mergeTwoOpenObjects,
   updateOpenObjectEndpoint,
 } from './utils/pathSnapping';
+import {
+  drawLassoOverlayOnContext,
+  extractLassoFragment,
+  LassoPoint,
+} from './utils/lassoHelper';
 
 const MAX_HISTORY = 30;
 const CUSTOM_JSON_PROPS = [
@@ -386,6 +401,11 @@ export default function App() {
     percent: number;
     armed: boolean;
   } | null>(null);
+  const [rotatingAngleHud, setRotatingAngleHud] = useState<{
+    deg: number;
+    isSnapped: boolean;
+    isCardinal: boolean;
+  } | null>(null);
   const [dontShowTutorialAgain, setDontShowTutorialAgain] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
     try {
@@ -415,6 +435,20 @@ export default function App() {
   const offlineHtmlBlobRef = useRef<Blob | null>(null);
   const [selectAllToast, setSelectAllToast] = useState(false);
   const selectAllToastTimerRef = useRef<number | null>(null);
+  const [pastedToast, setPastedToast] = useState(false);
+  const pastedToastTimerRef = useRef<number | null>(null);
+  const [pasteErrorKind, setPasteErrorKind] = useState<'empty' | 'blocked' | null>(null);
+  const pasteErrorToastTimerRef = useRef<number | null>(null);
+  const [canvasPasteMenu, setCanvasPasteMenu] = useState<{
+    clientX: number;
+    clientY: number;
+    worldX: number;
+    worldY: number;
+    waitingNativePaste?: boolean;
+  } | null>(null);
+  const pasteCatcherRef = useRef<HTMLDivElement | null>(null);
+  const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
+  const [bottomDeletePressing, setBottomDeletePressing] = useState(false);
 
   // Brush / Shape / Eraser settings
   const [stroke, setStroke] = useState<StrokeSettings>({
@@ -537,6 +571,24 @@ export default function App() {
     time: 0,
     count: 0,
   });
+
+  // Freehand Marching-Ants Lasso & Clipboard & Bottom Delete Long-Press refs
+  const isDrawingLassoRef = useRef(false);
+  const lassoPointsRef = useRef<LassoPoint[]>([]);
+  const lassoRafRef = useRef<number | null>(null);
+  const internalClipboardTokenRef = useRef<string | null>(null);
+  const internalClipboardPlainRef = useRef<string | null>(null);
+  const internalClipboardObjRef = useRef<any>(null);
+  const pasteOffsetCountRef = useRef<number>(0);
+  const emptyLongPressTimerRef = useRef<number | null>(null);
+  const emptyLongPressStartRef = useRef<{ clientX: number; clientY: number } | null>(null);
+  const emptyLongPressTriggeredRef = useRef<boolean>(false);
+  const canvasPasteMenuOpenRef = useRef<boolean>(false);
+  const bottomDeleteLongPressTimerRef = useRef<number | null>(null);
+  const bottomDeleteLongPressedRef = useRef(false);
+  const bottomDeletePressStartRef = useRef<{ x: number; y: number } | null>(null);
+
+  canvasPasteMenuOpenRef.current = Boolean(canvasPasteMenu);
 
   const refreshEmptyState = useCallback(() => {
     const fc = fabricCanvasRef.current;
@@ -743,6 +795,17 @@ export default function App() {
           const isEraser = Boolean(obj.isEraserPath);
           obj.selectable = !isEraser;
           obj.evented = !isEraser;
+        }
+      });
+    } else if (mode === 'lasso') {
+      fc.discardActiveObject();
+      fc.isDrawingMode = false;
+      fc.selection = false;
+      fc.defaultCursor = 'crosshair';
+      fc.forEachObject((obj: any) => {
+        if (!obj.excludeFromExport) {
+          obj.selectable = false;
+          obj.evented = false;
         }
       });
     } else {
@@ -1080,6 +1143,20 @@ export default function App() {
       cornerStyle: 'circle',
       padding: 6,
       borderScaleFactor: 1.5,
+      snapAngle: 45,
+      snapThreshold: 5.5,
+    });
+    fabric.ActiveSelection?.prototype?.set?.({
+      snapAngle: 45,
+      snapThreshold: 5.5,
+    });
+    fabric.IText?.prototype?.set?.({
+      snapAngle: 45,
+      snapThreshold: 5.5,
+    });
+    fabric.Group?.prototype?.set?.({
+      snapAngle: 45,
+      snapThreshold: 5.5,
     });
 
     const fc = new fabric.Canvas(fabricElRef.current, {
@@ -1117,6 +1194,27 @@ export default function App() {
         longPressCornerTimerRef.current = null;
       }
       pendingCornerPressRef.current = null;
+    };
+
+    const clearEmptyLongPressTimer = () => {
+      if (emptyLongPressTimerRef.current !== null) {
+        window.clearTimeout(emptyLongPressTimerRef.current);
+        emptyLongPressTimerRef.current = null;
+      }
+      emptyLongPressStartRef.current = null;
+    };
+
+    const getRawClientPoint = (rawEvt: MouseEvent | TouchEvent): { clientX: number; clientY: number } => {
+      if ('touches' in rawEvt) {
+        const tPt = rawEvt.touches[0] || rawEvt.changedTouches[0];
+        return tPt
+          ? { clientX: tPt.clientX, clientY: tPt.clientY }
+          : { clientX: 0, clientY: 0 };
+      }
+      return {
+        clientX: rawEvt.clientX,
+        clientY: rawEvt.clientY,
+      };
     };
 
     const disarmCornerRounding = () => {
@@ -1183,17 +1281,28 @@ export default function App() {
 
     // Selection & transform tracking (keeps top-right Pencil icon synced & elevates touched layer)
     const updateSel = () => refreshSelectedInfo();
+    const ensureRotationSnap = (target: any) => {
+      if (!target) return;
+      if (target.snapAngle !== 45 || target.snapThreshold !== 5.5) {
+        target.set({ snapAngle: 45, snapThreshold: 5.5 });
+      }
+    };
     fc.on('selection:created', () => {
-      bringTargetToFrontLayer(fc.getActiveObject());
+      const active = fc.getActiveObject();
+      ensureRotationSnap(active);
+      bringTargetToFrontLayer(active);
       refreshSelectedInfo();
     });
     fc.on('selection:updated', () => {
       disarmCornerRounding();
-      bringTargetToFrontLayer(fc.getActiveObject());
+      const active = fc.getActiveObject();
+      ensureRotationSnap(active);
+      bringTargetToFrontLayer(active);
       refreshSelectedInfo();
     });
     fc.on('selection:cleared', () => {
       disarmCornerRounding();
+      setRotatingAngleHud(null);
       setSelectedInfo(null);
       setObjectEditorOpen(false);
     });
@@ -1213,7 +1322,18 @@ export default function App() {
       }
       updateSel();
     });
-    fc.on('object:rotating', updateSel);
+    fc.on('object:rotating', (e: any) => {
+      const target = e?.target;
+      if (target) {
+        ensureRotationSnap(target);
+        const norm = ((((target.angle || 0) % 360) + 360) % 360);
+        const deg = Math.round(norm) % 360;
+        const isSnapped = Math.abs(norm - Math.round(norm / 45) * 45) < 0.01 || deg % 45 === 0;
+        const isCardinal = deg % 90 === 0;
+        setRotatingAngleHud({ deg, isSnapped, isCardinal });
+      }
+      updateSel();
+    });
 
     // Re-render background whenever viewport transforms or canvas renders + draw snap indicator
     fc.on('after:render', () => {
@@ -1244,6 +1364,24 @@ export default function App() {
         ctx.fillStyle = '#10B981';
         ctx.fill();
         ctx.restore();
+      }
+
+      if (isDrawingLassoRef.current && lassoPointsRef.current.length >= 2) {
+        const ctx = fc.getContext();
+        const r =
+          typeof fc.getRetinaScaling === 'function'
+            ? fc.getRetinaScaling()
+            : window.devicePixelRatio || 1;
+        const vpt = fc.viewportTransform || [1, 0, 0, 1, 0, 0];
+        drawLassoOverlayOnContext(ctx, lassoPointsRef.current, vpt, r, fabric);
+        if (lassoRafRef.current === null) {
+          lassoRafRef.current = window.requestAnimationFrame(() => {
+            lassoRafRef.current = null;
+            if (isDrawingLassoRef.current && fabricCanvasRef.current === fc) {
+              fc.requestRenderAll();
+            }
+          });
+        }
       }
     });
 
@@ -1407,6 +1545,10 @@ export default function App() {
     fc.on('mouse:down', (opt: any) => {
       const rawEvt = opt.e as MouseEvent | TouchEvent;
 
+      clearEmptyLongPressTimer();
+      setCanvasPasteMenu(null);
+      setRotatingAngleHud(null);
+
       // Hide initial "Just draw" prompt immediately when user starts interacting
       setIsCanvasEmpty(false);
 
@@ -1567,7 +1709,50 @@ export default function App() {
         }
         if (opt.target && !opt.target.excludeFromExport && !opt.target.isEraserPath) {
           bringTargetToFrontLayer(opt.target);
+        } else if (!opt.transform && !fc._currentTransform) {
+          const clientPt = getRawClientPoint(rawEvt);
+          const worldPt = fc.getPointer(rawEvt);
+          emptyLongPressTriggeredRef.current = false;
+          emptyLongPressStartRef.current = clientPt;
+          emptyLongPressTimerRef.current = window.setTimeout(() => {
+            emptyLongPressTimerRef.current = null;
+            emptyLongPressStartRef.current = null;
+            if (
+              isPinchingRef.current ||
+              isPanningDragRef.current ||
+              activeModeRef.current !== 'select'
+            ) {
+              return;
+            }
+            emptyLongPressTriggeredRef.current = true;
+            window.setTimeout(() => {
+              emptyLongPressTriggeredRef.current = false;
+            }, 600);
+
+            fc._groupSelector = null;
+            fc.discardActiveObject();
+            fc.requestRenderAll();
+            refreshSelectedInfo();
+
+            if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+              navigator.vibrate(18);
+            }
+            setCanvasPasteMenu({
+              clientX: clientPt.clientX,
+              clientY: clientPt.clientY,
+              worldX: worldPt.x,
+              worldY: worldPt.y,
+            });
+          }, 450);
         }
+        return;
+      }
+
+      if (mode === 'lasso') {
+        const pt = fc.getPointer(rawEvt);
+        isDrawingLassoRef.current = true;
+        lassoPointsRef.current = [{ x: pt.x, y: pt.y }];
+        fc.requestRenderAll();
         return;
       }
 
@@ -1804,6 +1989,31 @@ export default function App() {
         }
       }
 
+      if (emptyLongPressStartRef.current) {
+        const currClient = getRawClientPoint(rawEvt);
+        if (
+          Math.hypot(
+            currClient.clientX - emptyLongPressStartRef.current.clientX,
+            currClient.clientY - emptyLongPressStartRef.current.clientY
+          ) > 8
+        ) {
+          clearEmptyLongPressTimer();
+        }
+      }
+
+      if (isDrawingLassoRef.current && !isPinchingRef.current) {
+        const pt = fc.getPointer(rawEvt);
+        const pts = lassoPointsRef.current;
+        const zoom = fc.getZoom() || 1;
+        const minStep = 3 / Math.max(0.2, zoom);
+        const last = pts[pts.length - 1];
+        if (!last || Math.hypot(pt.x - last.x, pt.y - last.y) >= minStep) {
+          pts.push({ x: pt.x, y: pt.y });
+          fc.requestRenderAll();
+        }
+        return;
+      }
+
       if (!isDrawingShapeRef.current || !tempShapeRef.current || isPinchingRef.current) {
         const mode = activeModeRef.current;
         if (!isPinchingRef.current && (mode === 'line' || mode === 'bezier')) {
@@ -2011,6 +2221,8 @@ export default function App() {
     // Mouse / Pointer Up
     fc.on('mouse:up', (opt: any) => {
       clearCornerLongPressTimer();
+      clearEmptyLongPressTimer();
+      setRotatingAngleHud(null);
       snapIndicatorRef.current = null;
 
       if (cornerRoundingDragRef.current) {
@@ -2038,6 +2250,36 @@ export default function App() {
       if (isPanningDragRef.current) {
         isPanningDragRef.current = false;
         fc.defaultCursor = isSpaceHeldRef.current ? 'grab' : 'default';
+        return;
+      }
+
+      if (isDrawingLassoRef.current) {
+        isDrawingLassoRef.current = false;
+        if (lassoRafRef.current !== null) {
+          window.cancelAnimationFrame(lassoRafRef.current);
+          lassoRafRef.current = null;
+        }
+        const pts = lassoPointsRef.current.slice();
+        lassoPointsRef.current = [];
+        fc.requestRenderAll();
+        if (pts.length >= 3) {
+          void extractLassoFragment(fc, pts, (fragImg) => {
+            activeModeRef.current = 'select';
+            setActiveMode('select');
+            syncFabricToolState();
+            fc.setActiveObject(fragImg);
+            fragImg.setCoords();
+            fc.requestRenderAll();
+            refreshEmptyState();
+            refreshSelectedInfo();
+            saveHistory();
+            trackFunction('lasso_extract_fragment', 'selection', {
+              points: pts.length,
+            });
+          });
+        } else {
+          refreshEmptyState();
+        }
         return;
       }
 
@@ -2594,6 +2836,8 @@ export default function App() {
 
     // Desktop Mouse Wheel & Trackpad Pinch Zoom
     fc.on('mouse:wheel', (opt: any) => {
+      clearEmptyLongPressTimer();
+      setCanvasPasteMenu(null);
       const evt = opt.e as WheelEvent;
       evt.preventDefault();
       evt.stopPropagation();
@@ -2633,6 +2877,8 @@ export default function App() {
         e.stopPropagation();
 
         clearCornerLongPressTimer();
+        clearEmptyLongPressTimer();
+        setCanvasPasteMenu(null);
         if (cornerRoundingDragRef.current) {
           cornerRoundingDragRef.current = null;
         }
@@ -2648,6 +2894,15 @@ export default function App() {
             fc.remove(tempShapeRef.current);
             tempShapeRef.current = null;
             isDrawingShapeRef.current = false;
+          }
+          if (isDrawingLassoRef.current) {
+            isDrawingLassoRef.current = false;
+            lassoPointsRef.current = [];
+            if (lassoRafRef.current !== null) {
+              window.cancelAnimationFrame(lassoRafRef.current);
+              lassoRafRef.current = null;
+            }
+            fc.requestRenderAll();
           }
           if (Date.now() - lastSingleTouchRef.current.time < 220) {
             const objs = fc.getObjects();
@@ -2707,7 +2962,10 @@ export default function App() {
       if (
         pe.pointerType === 'touch' ||
         pendingCornerPressRef.current ||
-        cornerRoundingDragRef.current
+        cornerRoundingDragRef.current ||
+        emptyLongPressTimerRef.current !== null ||
+        emptyLongPressTriggeredRef.current ||
+        canvasPasteMenuOpenRef.current
       ) {
         return;
       }
@@ -2768,6 +3026,13 @@ export default function App() {
 
     return () => {
       clearCornerLongPressTimer();
+      clearEmptyLongPressTimer();
+      isDrawingLassoRef.current = false;
+      lassoPointsRef.current = [];
+      if (lassoRafRef.current !== null) {
+        window.cancelAnimationFrame(lassoRafRef.current);
+        lassoRafRef.current = null;
+      }
       window.removeEventListener('resize', handleResize);
       if (upperEl) {
         upperEl.removeEventListener('touchstart', handleTouchStart, true);
@@ -2798,13 +3063,71 @@ export default function App() {
     renderBackground();
   }, [bgConfig, canvasSize, renderBackground]);
 
+  const handleSelectAll = useCallback(() => {
+    const fc = fabricCanvasRef.current;
+    const fabric = getFabric();
+    if (!fc || !fabric) return;
+
+    if (bezierSessionRef.current) {
+      finalizeBezierSession(false);
+    }
+    if (contourSessionRef.current) {
+      finalizeContourSession(false);
+    }
+
+    setObjectEditorOpen(false);
+    setActivePopover(null);
+    setActiveMode('select');
+    activeModeRef.current = 'select';
+    syncFabricToolState();
+
+    const targets = fc
+      .getObjects()
+      .filter((o: any) => o && !o.excludeFromExport && !o.isEraserPath);
+
+    if (targets.length === 0) {
+      fc.discardActiveObject();
+      fc.requestRenderAll();
+      refreshSelectedInfo();
+      trackFunction('select_all_objects', 'selection', { object_count: 0 });
+      return;
+    }
+
+    targets.forEach((o: any) => {
+      o.set({ selectable: true, evented: true });
+      o.setCoords();
+    });
+
+    if (targets.length === 1) {
+      fc.setActiveObject(targets[0]);
+    } else {
+      const sel = new fabric.ActiveSelection(targets, { canvas: fc });
+      fc.setActiveObject(sel);
+    }
+
+    fc.requestRenderAll();
+    refreshSelectedInfo();
+    trackFunction('select_all_objects', 'selection', { object_count: targets.length });
+
+    setSelectAllToast(true);
+    if (selectAllToastTimerRef.current) {
+      window.clearTimeout(selectAllToastTimerRef.current);
+    }
+    selectAllToastTimerRef.current = window.setTimeout(() => {
+      setSelectAllToast(false);
+      selectAllToastTimerRef.current = null;
+    }, 1800);
+  }, [finalizeBezierSession, finalizeContourSession, refreshSelectedInfo, syncFabricToolState]);
+
   // Keyboard shortcuts
   useEffect(() => {
     const isTypingTarget = (target: EventTarget | null) => {
       const el = target as HTMLElement | null;
-      if (!el) return false;
-      const tag = el.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+      if (el) {
+        const tag = el.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+        if (el.isContentEditable) return true;
+      }
       const activeObj = fabricCanvasRef.current?.getActiveObject();
       if (activeObj && activeObj.isEditing) return true;
       return false;
@@ -2817,6 +3140,12 @@ export default function App() {
         e.preventDefault();
         isSpaceHeldRef.current = true;
         setIsSpacePanning(true);
+        return;
+      }
+
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'a') {
+        e.preventDefault();
+        handleSelectAll();
         return;
       }
 
@@ -2864,6 +3193,22 @@ export default function App() {
         if (contourSessionRef.current) {
           finalizeContourSession(true);
         }
+        if (isDrawingLassoRef.current) {
+          isDrawingLassoRef.current = false;
+          lassoPointsRef.current = [];
+          if (lassoRafRef.current !== null) {
+            window.cancelAnimationFrame(lassoRafRef.current);
+            lassoRafRef.current = null;
+          }
+          fabricCanvasRef.current?.requestRenderAll();
+        }
+        if (activeModeRef.current === 'lasso') {
+          activeModeRef.current = 'select';
+          setActiveMode('select');
+          syncFabricToolState();
+        }
+        setCanvasPasteMenu(null);
+        setClearConfirmOpen(false);
         setActivePopover(null);
         setObjectEditorOpen(false);
         setHelpOpen(false);
@@ -2890,7 +3235,15 @@ export default function App() {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
     };
-  }, [finalizeBezierSession, finalizeContourSession, handleRedo, handleUndo, saveHistory]);
+  }, [
+    finalizeBezierSession,
+    finalizeContourSession,
+    handleRedo,
+    handleSelectAll,
+    handleUndo,
+    saveHistory,
+    syncFabricToolState,
+  ]);
 
   // Track initial workspace screen and contextual floating bars
   useEffect(() => {
@@ -2936,6 +3289,7 @@ export default function App() {
 
   // Sidebar & Tool Handlers
   const handleToggleSidebar = () => {
+    setCanvasPasteMenu(null);
     setSidebarOpen((prev) => {
       const next = !prev;
       if (prev) {
@@ -2949,6 +3303,7 @@ export default function App() {
   };
 
   const handleTogglePopover = (pop: ActivePopover) => {
+    setCanvasPasteMenu(null);
     setObjectEditorOpen(false);
     setActivePopover((prev) => {
       const next = prev === pop ? null : pop;
@@ -3110,6 +3465,7 @@ export default function App() {
   }, []);
 
   const handleSelectMode = (mode: DrawMode) => {
+    setCanvasPasteMenu(null);
     if (bezierSessionRef.current && mode !== 'bezier') {
       finalizeBezierSession(false);
     }
@@ -3123,61 +3479,605 @@ export default function App() {
     trackFunction('select_draw_mode', 'tools', { mode });
   };
 
-  const handleSelectAll = useCallback(() => {
-    const fc = fabricCanvasRef.current;
-    const fabric = getFabric();
-    if (!fc || !fabric) return;
+  const showPastedToast = useCallback(() => {
+    setPasteErrorKind(null);
+    setPastedToast(true);
+    if (pastedToastTimerRef.current) {
+      window.clearTimeout(pastedToastTimerRef.current);
+    }
+    pastedToastTimerRef.current = window.setTimeout(() => {
+      setPastedToast(false);
+      pastedToastTimerRef.current = null;
+    }, 1800);
+  }, []);
 
+  const showPasteErrorToast = useCallback((kind: 'empty' | 'blocked' = 'empty') => {
+    setPastedToast(false);
+    setPasteErrorKind(kind);
+    if (pasteErrorToastTimerRef.current) {
+      window.clearTimeout(pasteErrorToastTimerRef.current);
+    }
+    pasteErrorToastTimerRef.current = window.setTimeout(() => {
+      setPasteErrorKind(null);
+      pasteErrorToastTimerRef.current = null;
+    }, 2600);
+  }, []);
+
+  useEffect(() => {
+    if (canvasPasteMenu?.waitingNativePaste) {
+      const raf = window.requestAnimationFrame(() => {
+        pasteCatcherRef.current?.focus({ preventScroll: true });
+      });
+      return () => window.cancelAnimationFrame(raf);
+    }
+  }, [canvasPasteMenu?.waitingNativePaste]);
+
+  const getViewportWorldCenter = useCallback((fc: any, fabric: any): Point => {
+    const center = fc.getCenter();
+    const vpt = fc.viewportTransform || [1, 0, 0, 1, 0, 0];
+    const inv = fabric.util.invertTransform(vpt);
+    return fabric.util.transformPoint(new fabric.Point(center.left, center.top), inv);
+  }, []);
+
+  const pasteInternalObjectAt = useCallback(
+    (targetWorldPt?: Point) => {
+      const fc = fabricCanvasRef.current;
+      const fabric = getFabric();
+      if (!fc || !fabric || !internalClipboardObjRef.current) return false;
+
+      if (bezierSessionRef.current) finalizeBezierSession(false);
+      if (contourSessionRef.current) finalizeContourSession(false);
+
+      pasteOffsetCountRef.current += 1;
+      const offset = 20 * pasteOffsetCountRef.current;
+
+      internalClipboardObjRef.current.clone((pasted: any) => {
+        fc.discardActiveObject();
+        pasted.set({
+          evented: true,
+          selectable: true,
+          cornerColor: '#2563EB',
+          borderColor: '#2563EB',
+        });
+        if (targetWorldPt && typeof pasted.setPositionByOrigin === 'function') {
+          pasted.setPositionByOrigin(
+            new fabric.Point(targetWorldPt.x, targetWorldPt.y),
+            'center',
+            'center'
+          );
+        } else {
+          pasted.set({
+            left: (pasted.left || 0) + offset,
+            top: (pasted.top || 0) + offset,
+          });
+        }
+        if (pasted.type === 'polygon' && pasted.basePathOffset) {
+          pasted.set({
+            width: pasted.baseWidth ?? pasted.width,
+            height: pasted.baseHeight ?? pasted.height,
+            pathOffset: new fabric.Point(pasted.basePathOffset.x, pasted.basePathOffset.y),
+            dirty: true,
+          });
+        }
+        if (pasted.type === 'activeSelection') {
+          pasted.canvas = fc;
+          pasted.forEachObject((obj: any) => {
+            if (obj.fillMeta?.mode === 'photo') {
+              refreshObjectPhotoFill(obj, fc);
+            }
+            attachControlsToObject(obj);
+            fc.add(obj);
+          });
+          pasted.setCoords();
+        } else {
+          if (pasted.fillMeta?.mode === 'photo') {
+            refreshObjectPhotoFill(pasted, fc);
+          }
+          attachControlsToObject(pasted);
+          fc.add(pasted);
+        }
+
+        setIsCanvasEmpty(false);
+        setActivePopover(null);
+        activeModeRef.current = 'select';
+        setActiveMode('select');
+        syncFabricToolState();
+        fc.setActiveObject(pasted);
+        pasted.setCoords();
+        fc.requestRenderAll();
+        refreshEmptyState();
+        refreshSelectedInfo();
+        saveHistory();
+        showPastedToast();
+        trackFunction('paste_object', 'clipboard', {
+          source: targetWorldPt ? 'long_press_canvas' : 'shortcut',
+        });
+      }, CUSTOM_JSON_PROPS);
+      return true;
+    },
+    [
+      attachControlsToObject,
+      finalizeBezierSession,
+      finalizeContourSession,
+      refreshEmptyState,
+      refreshSelectedInfo,
+      saveHistory,
+      showPastedToast,
+      syncFabricToolState,
+    ]
+  );
+
+  const pasteImageDataUrlAt = useCallback(
+    (dataUrl: string, targetWorldPt?: Point) => {
+      const fc = fabricCanvasRef.current;
+      const fabric = getFabric();
+      if (!fc || !fabric || !dataUrl) return false;
+
+      if (bezierSessionRef.current) finalizeBezierSession(false);
+      if (contourSessionRef.current) finalizeContourSession(false);
+
+      fabric.Image.fromURL(
+        dataUrl,
+        (img: any) => {
+          if (!img) return;
+          const zoom = fc.getZoom() || 1;
+          const maxW = (fc.getWidth() * 0.65) / zoom;
+          const maxH = (fc.getHeight() * 0.65) / zoom;
+          const scale = Math.min(1, maxW / (img.width || 1), maxH / (img.height || 1));
+          const placePt = targetWorldPt ?? getViewportWorldCenter(fc, fabric);
+
+          img.set({
+            left: placePt.x,
+            top: placePt.y,
+            originX: 'center',
+            originY: 'center',
+            scaleX: scale,
+            scaleY: scale,
+            strokeUniform: true,
+            strokeWidth: 0,
+            stroke: '#000000',
+            strokeColorHex: '#000000',
+            strokeOpacity: 1,
+            selectable: true,
+            evented: true,
+          });
+
+          setIsCanvasEmpty(false);
+          setActivePopover(null);
+          activeModeRef.current = 'select';
+          setActiveMode('select');
+          fc.add(img);
+          syncFabricToolState();
+          fc.setActiveObject(img);
+          img.setCoords();
+          fc.requestRenderAll();
+          refreshEmptyState();
+          refreshSelectedInfo();
+          saveHistory();
+          showPastedToast();
+          trackFunction('paste_image', 'clipboard', {
+            source: targetWorldPt ? 'long_press_canvas' : 'shortcut',
+          });
+        },
+        { crossOrigin: 'anonymous' }
+      );
+      return true;
+    },
+    [
+      finalizeBezierSession,
+      finalizeContourSession,
+      getViewportWorldCenter,
+      refreshEmptyState,
+      refreshSelectedInfo,
+      saveHistory,
+      showPastedToast,
+      syncFabricToolState,
+    ]
+  );
+
+  const pasteImageBlobAt = useCallback(
+    (imageBlob: Blob, targetWorldPt?: Point) => {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const dataUrl = ev.target?.result as string;
+        if (dataUrl) {
+          pasteImageDataUrlAt(dataUrl, targetWorldPt);
+        }
+      };
+      reader.readAsDataURL(imageBlob);
+      return true;
+    },
+    [pasteImageDataUrlAt]
+  );
+
+  const pastePlainTextAt = useCallback(
+    (rawText: string, targetWorldPt?: Point) => {
+      const fc = fabricCanvasRef.current;
+      const fabric = getFabric();
+      const trimmed = rawText.trim();
+      if (!fc || !fabric || !trimmed) return false;
+
+      if (bezierSessionRef.current) finalizeBezierSession(false);
+      if (contourSessionRef.current) finalizeContourSession(false);
+
+      const zoom = fc.getZoom() || 1;
+      const placePt = targetWorldPt ?? getViewportWorldCenter(fc, fabric);
+      const fontSize = Math.max(18, Math.min(96, Math.round(28 / Math.max(0.25, zoom))));
+
+      const textObj = new fabric.IText(trimmed, {
+        left: placePt.x,
+        top: placePt.y,
+        originX: 'center',
+        originY: 'center',
+        fontFamily: 'Inter, system-ui, sans-serif',
+        fontSize,
+        fill: strokeRef.current.color,
+        editable: true,
+        hasControls: true,
+        hasBorders: true,
+        selectable: true,
+        evented: true,
+      });
+
+      setIsCanvasEmpty(false);
+      setActivePopover(null);
+      activeModeRef.current = 'select';
+      setActiveMode('select');
+      fc.add(textObj);
+      syncFabricToolState();
+      fc.setActiveObject(textObj);
+      textObj.setCoords();
+      fc.requestRenderAll();
+      refreshEmptyState();
+      refreshSelectedInfo();
+      saveHistory();
+      showPastedToast();
+      trackFunction('paste_text', 'clipboard', {
+        length: trimmed.length,
+        source: targetWorldPt ? 'long_press_canvas' : 'shortcut',
+      });
+      return true;
+    },
+    [
+      finalizeBezierSession,
+      finalizeContourSession,
+      getViewportWorldCenter,
+      refreshEmptyState,
+      refreshSelectedInfo,
+      saveHistory,
+      showPastedToast,
+      syncFabricToolState,
+    ]
+  );
+
+  const handleClipboardDataTransfer = useCallback(
+    (data: DataTransfer | null | undefined, targetWorldPt?: Point): boolean => {
+      if (!data) return false;
+
+      // 1) Internal ZenPainter object token
+      const htmlData = data.getData('text/html') || '';
+      const tokenMatch =
+        htmlData.match(/name=["']zp-clip["'][^>]*content=["']([^"']+)["']/i) ||
+        htmlData.match(/content=["']([^"']+)["'][^>]*name=["']zp-clip["']/i);
+      const clipToken = tokenMatch?.[1] || null;
+
+      if (
+        clipToken &&
+        clipToken === internalClipboardTokenRef.current &&
+        internalClipboardObjRef.current
+      ) {
+        pasteInternalObjectAt(targetWorldPt);
+        return true;
+      }
+
+      // 2) Image file / bitmap in DataTransfer
+      let imageFile: File | null = null;
+      const items = data.items;
+      if (items) {
+        for (let i = 0; i < items.length; i++) {
+          if (items[i].type && items[i].type.startsWith('image/')) {
+            const f = items[i].getAsFile();
+            if (f) {
+              imageFile = f;
+              break;
+            }
+          }
+        }
+      }
+      if (!imageFile && data.files && data.files.length > 0) {
+        for (let i = 0; i < data.files.length; i++) {
+          const f = data.files[i];
+          if (f.type && f.type.startsWith('image/')) {
+            imageFile = f;
+            break;
+          }
+        }
+      }
+      if (imageFile) {
+        pasteImageBlobAt(imageFile, targetWorldPt);
+        return true;
+      }
+
+      // 3) Inline data-URI <img> wrapped in HTML clipboard
+      const htmlImgMatch = htmlData.match(/<img[^>]+src=["'](data:image\/[^"']+)["']/i);
+      if (htmlImgMatch?.[1]) {
+        pasteImageDataUrlAt(htmlImgMatch[1], targetWorldPt);
+        return true;
+      }
+
+      // 4) Plain text in DataTransfer
+      const plainText = data.getData('text/plain');
+      if (plainText && plainText.trim().length > 0) {
+        pastePlainTextAt(plainText, targetWorldPt);
+        return true;
+      }
+
+      return false;
+    },
+    [pasteImageBlobAt, pasteImageDataUrlAt, pasteInternalObjectAt, pastePlainTextAt]
+  );
+
+  const handlePasteFromCanvasMenu = useCallback(async () => {
+    if (!canvasPasteMenu) return;
+    const currentMenu = canvasPasteMenu;
+    const targetPt = { x: currentMenu.worldX, y: currentMenu.worldY };
+
+    let readAttemptSucceeded = false;
+
+    if (typeof navigator !== 'undefined' && navigator.clipboard) {
+      if (typeof navigator.clipboard.read === 'function') {
+        try {
+          const items = await navigator.clipboard.read();
+          readAttemptSucceeded = true;
+
+          // 1) Check for our internal object copy tag or HTML data-URI image
+          let htmlFallbackImg: string | null = null;
+          for (const item of items) {
+            if (item.types.includes('text/html')) {
+              const htmlBlob = await item.getType('text/html');
+              const htmlText = await htmlBlob.text();
+              const tokenMatch =
+                htmlText.match(/name=["']zp-clip["'][^>]*content=["']([^"']+)["']/i) ||
+                htmlText.match(/content=["']([^"']+)["'][^>]*name=["']zp-clip["']/i);
+              const clipToken = tokenMatch?.[1] || null;
+              if (
+                clipToken &&
+                clipToken === internalClipboardTokenRef.current &&
+                internalClipboardObjRef.current
+              ) {
+                setCanvasPasteMenu(null);
+                pasteInternalObjectAt(targetPt);
+                return;
+              }
+              if (!htmlFallbackImg) {
+                const m = htmlText.match(/<img[^>]+src=["'](data:image\/[^"']+)["']/i);
+                if (m?.[1]) htmlFallbackImg = m[1];
+              }
+            }
+          }
+
+          // 2) Check for an image in clipboard
+          for (const item of items) {
+            const imgType = item.types.find((tp) => tp.startsWith('image/'));
+            if (imgType) {
+              const imgBlob = await item.getType(imgType);
+              setCanvasPasteMenu(null);
+              pasteImageBlobAt(imgBlob, targetPt);
+              return;
+            }
+          }
+
+          if (htmlFallbackImg) {
+            setCanvasPasteMenu(null);
+            pasteImageDataUrlAt(htmlFallbackImg, targetPt);
+            return;
+          }
+
+          // 3) Check for plain text in clipboard
+          for (const item of items) {
+            if (item.types.includes('text/plain')) {
+              const txtBlob = await item.getType('text/plain');
+              const txt = await txtBlob.text();
+              if (txt && txt.trim()) {
+                setCanvasPasteMenu(null);
+                if (
+                  internalClipboardObjRef.current &&
+                  internalClipboardPlainRef.current &&
+                  txt.trim() === internalClipboardPlainRef.current.trim()
+                ) {
+                  pasteInternalObjectAt(targetPt);
+                  return;
+                }
+                pastePlainTextAt(txt, targetPt);
+                return;
+              }
+            }
+          }
+        } catch {
+          readAttemptSucceeded = false;
+        }
+      }
+
+      if (!readAttemptSucceeded && typeof navigator.clipboard.readText === 'function') {
+        try {
+          const txt = await navigator.clipboard.readText();
+          readAttemptSucceeded = true;
+          if (txt && txt.trim()) {
+            setCanvasPasteMenu(null);
+            if (
+              internalClipboardObjRef.current &&
+              internalClipboardPlainRef.current &&
+              txt.trim() === internalClipboardPlainRef.current.trim()
+            ) {
+              pasteInternalObjectAt(targetPt);
+              return;
+            }
+            pastePlainTextAt(txt, targetPt);
+            return;
+          }
+        } catch {
+          readAttemptSucceeded = false;
+        }
+      }
+    }
+
+    if (readAttemptSucceeded) {
+      // System clipboard API succeeded and is genuinely empty
+      setCanvasPasteMenu(null);
+      showPasteErrorToast('empty');
+      return;
+    }
+
+    // Try silent execCommand('paste') fallback inside temporary offscreen editable node (for WebViews / permissive browsers)
+    let execHandled = false;
+    try {
+      const probe = document.createElement('div');
+      probe.contentEditable = 'true';
+      probe.style.position = 'fixed';
+      probe.style.left = '-9999px';
+      probe.style.top = '0';
+      probe.style.opacity = '0';
+      document.body.appendChild(probe);
+      const onProbePaste = (ev: ClipboardEvent) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        execHandled = handleClipboardDataTransfer(ev.clipboardData, targetPt);
+      };
+      probe.addEventListener('paste', onProbePaste as EventListener, { once: true });
+      probe.focus({ preventScroll: true });
+      document.execCommand('paste');
+      probe.removeEventListener('paste', onProbePaste as EventListener);
+      document.body.removeChild(probe);
+    } catch {
+      execHandled = false;
+    }
+
+    if (execHandled) {
+      setCanvasPasteMenu(null);
+      return;
+    }
+
+    // Browser/iframe Permissions Policy blocked programmatic clipboard read:
+    // keep the popup open and switch it to an auto-focused native Paste Catcher (works with Ctrl+V AND mobile OS long-tap Paste!)
+    setCanvasPasteMenu({
+      ...currentMenu,
+      waitingNativePaste: true,
+    });
+  }, [
+    canvasPasteMenu,
+    handleClipboardDataTransfer,
+    pasteImageBlobAt,
+    pasteImageDataUrlAt,
+    pasteInternalObjectAt,
+    pastePlainTextAt,
+    showPasteErrorToast,
+  ]);
+
+  // Standard Copy / Paste (Ctrl+C / Ctrl+V) for external images, plain text, and canvas objects
+  useEffect(() => {
+    const isTypingTarget = (target: EventTarget | null) => {
+      const el = target as HTMLElement | null;
+      if (el) {
+        const tag = el.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+        if (el.isContentEditable) return true;
+      }
+      const activeObj = fabricCanvasRef.current?.getActiveObject();
+      if (activeObj && activeObj.isEditing) return true;
+      return false;
+    };
+
+    const handleCopy = (e: ClipboardEvent) => {
+      if (isTypingTarget(e.target)) return;
+      const fc = fabricCanvasRef.current;
+      if (!fc || !e.clipboardData) return;
+
+      const domSelection = window.getSelection()?.toString()?.trim();
+      if (domSelection) return;
+
+      const active = fc.getActiveObject();
+      if (!active || active.excludeFromExport) return;
+
+      const token = `zp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const plainFallback =
+        typeof active.text === 'string' && active.text.trim()
+          ? active.text
+          : '[ZenPainter Object]';
+
+      internalClipboardTokenRef.current = token;
+      internalClipboardPlainRef.current = plainFallback;
+      pasteOffsetCountRef.current = 0;
+
+      e.preventDefault();
+      e.clipboardData.setData('text/html', `<meta name="zp-clip" content="${token}">`);
+      e.clipboardData.setData('text/plain', plainFallback);
+
+      active.clone((cloned: any) => {
+        internalClipboardObjRef.current = cloned;
+      }, CUSTOM_JSON_PROPS);
+
+      trackFunction('copy_object', 'clipboard', { object_type: active.type || 'object' });
+    };
+
+    const handlePaste = (e: ClipboardEvent) => {
+      if (isTypingTarget(e.target)) return;
+      if (handleClipboardDataTransfer(e.clipboardData)) {
+        e.preventDefault();
+      }
+    };
+
+    window.addEventListener('copy', handleCopy);
+    window.addEventListener('paste', handlePaste);
+    return () => {
+      window.removeEventListener('copy', handleCopy);
+      window.removeEventListener('paste', handlePaste);
+    };
+  }, [handleClipboardDataTransfer]);
+
+  const handleActivateLasso = useCallback(() => {
     if (bezierSessionRef.current) {
       finalizeBezierSession(false);
     }
     if (contourSessionRef.current) {
       finalizeContourSession(false);
     }
-
     setObjectEditorOpen(false);
     setActivePopover(null);
-    setActiveMode('select');
-    activeModeRef.current = 'select';
+    activeModeRef.current = 'lasso';
+    setActiveMode('lasso');
     syncFabricToolState();
+    trackFunction('activate_lasso', 'selection');
+  }, [finalizeBezierSession, finalizeContourSession, syncFabricToolState]);
 
-    const targets = fc
-      .getObjects()
-      .filter((o: any) => o && !o.excludeFromExport && !o.isEraserPath);
-
-    if (targets.length === 0) {
-      fc.discardActiveObject();
-      fc.requestRenderAll();
-      refreshSelectedInfo();
-      trackFunction('select_all_objects', 'selection', { object_count: 0 });
-      return;
+  const handleClearCanvas = useCallback(() => {
+    const fc = fabricCanvasRef.current;
+    if (!fc) return;
+    if (bezierSessionRef.current) {
+      finalizeBezierSession(true);
+    }
+    if (contourSessionRef.current) {
+      finalizeContourSession(true);
+    }
+    isDrawingLassoRef.current = false;
+    lassoPointsRef.current = [];
+    if (lassoRafRef.current !== null) {
+      window.cancelAnimationFrame(lassoRafRef.current);
+      lassoRafRef.current = null;
     }
 
-    targets.forEach((o: any) => {
-      o.set({ selectable: true, evented: true });
-      o.setCoords();
-    });
-
-    if (targets.length === 1) {
-      fc.setActiveObject(targets[0]);
-    } else {
-      const sel = new fabric.ActiveSelection(targets, { canvas: fc });
-      fc.setActiveObject(sel);
-    }
-
+    const toRemove = fc.getObjects().filter((o: any) => !o.excludeFromExport);
+    toRemove.forEach((o: any) => fc.remove(o));
+    fc.discardActiveObject();
     fc.requestRenderAll();
-    refreshSelectedInfo();
-    trackFunction('select_all_objects', 'selection', { object_count: targets.length });
 
-    setSelectAllToast(true);
-    if (selectAllToastTimerRef.current) {
-      window.clearTimeout(selectAllToastTimerRef.current);
-    }
-    selectAllToastTimerRef.current = window.setTimeout(() => {
-      setSelectAllToast(false);
-      selectAllToastTimerRef.current = null;
-    }, 1800);
-  }, [finalizeBezierSession, finalizeContourSession, refreshSelectedInfo, syncFabricToolState]);
+    setSelectedInfo(null);
+    setObjectEditorOpen(false);
+    setActivePopover(null);
+    setClearConfirmOpen(false);
+    refreshEmptyState();
+    saveHistory();
+    trackFunction('clear_canvas', 'edit', { cleared_count: toRemove.length });
+  }, [finalizeBezierSession, finalizeContourSession, refreshEmptyState, saveHistory]);
 
   const handleActivateEraser = () => {
     if (bezierSessionRef.current) {
@@ -4363,8 +5263,13 @@ export default function App() {
         onTogglePopover={handleTogglePopover}
         activeMode={activeMode}
         onSelectMode={handleSelectMode}
-        onSelectAll={handleSelectAll}
+        onActivateLasso={handleActivateLasso}
         onActivateEraser={handleActivateEraser}
+        onRequestClearCanvas={() => {
+          setActivePopover(null);
+          setObjectEditorOpen(false);
+          setClearConfirmOpen(true);
+        }}
         onTriggerImageUpload={() => {
           trackFunction('trigger_image_upload', 'insert');
           fileInputRef.current?.click();
@@ -4406,6 +5311,38 @@ export default function App() {
         </div>
       )}
 
+      {pastedToast && (
+        <div
+          className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 px-3.5 py-2 rounded-2xl border backdrop-blur-md flex items-center gap-2 shadow-xl pointer-events-none ${
+            isDarkBg
+              ? 'bg-neutral-900/95 border-blue-500/40 text-blue-300'
+              : 'bg-white/95 border-blue-200 text-blue-700'
+          }`}
+        >
+          <Check className="w-3.5 h-3.5 shrink-0" />
+          <span className="text-xs font-semibold whitespace-nowrap">
+            {t('pastedToast')}
+          </span>
+        </div>
+      )}
+
+      {pasteErrorKind && (
+        <div
+          className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 px-3.5 py-2 rounded-2xl border backdrop-blur-md flex items-center gap-2 shadow-xl pointer-events-none ${
+            isDarkBg
+              ? 'bg-neutral-900/95 border-amber-500/40 text-amber-300'
+              : 'bg-white/95 border-amber-200 text-amber-700'
+          }`}
+        >
+          <ClipboardPaste className="w-3.5 h-3.5 shrink-0" />
+          <span className="text-xs font-semibold whitespace-nowrap">
+            {pasteErrorKind === 'empty'
+              ? t('pasteClipboardEmptyToast')
+              : t('pasteUnavailableToast')}
+          </span>
+        </div>
+      )}
+
       {/* Selected Object Live Re-Editor Popover */}
       {selectedInfo && objectEditorOpen && (
         <ObjectEditorPopover
@@ -4423,6 +5360,10 @@ export default function App() {
           onSendToBack={handleSendToBack}
           onDuplicate={handleDuplicateSelected}
           onDelete={handleDeleteSelected}
+          onRequestClearCanvas={() => {
+            setObjectEditorOpen(false);
+            setClearConfirmOpen(true);
+          }}
           onClose={() => setObjectEditorOpen(false)}
           isDarkBg={isDarkBg}
         />
@@ -4496,6 +5437,10 @@ export default function App() {
           onChangeSize={setEraserSize}
           hasSelectedObject={Boolean(selectedInfo)}
           onDeleteSelected={handleDeleteSelected}
+          onRequestClearCanvas={() => {
+            setActivePopover(null);
+            setClearConfirmOpen(true);
+          }}
           isDarkBg={isDarkBg}
         />
       )}
@@ -4539,6 +5484,37 @@ export default function App() {
           onTriggerOfflineDownload={handleTriggerOfflineDownload}
           isDarkBg={isDarkBg}
         />
+      )}
+
+      {/* Live Rotation Angle Pill (highlights gently at 45° / 90° snap steps) */}
+      {rotatingAngleHud && !cornerRoundHud && (
+        <div
+          className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 px-3 py-1.5 rounded-2xl border backdrop-blur-md flex items-center gap-2 shadow-xl pointer-events-none transition-colors ${
+            rotatingAngleHud.isSnapped
+              ? isDarkBg
+                ? rotatingAngleHud.isCardinal
+                  ? 'bg-neutral-900/95 border-emerald-500/70 text-emerald-300'
+                  : 'bg-neutral-900/95 border-blue-500/70 text-blue-300'
+                : rotatingAngleHud.isCardinal
+                  ? 'bg-white/95 border-emerald-400 text-emerald-700'
+                  : 'bg-white/95 border-blue-400 text-blue-700'
+              : isDarkBg
+                ? 'bg-neutral-900/95 border-neutral-700 text-neutral-100'
+                : 'bg-white/95 border-slate-200 text-slate-800'
+          }`}
+        >
+          <RotateCw className="w-3.5 h-3.5 shrink-0" />
+          <span className="text-xs font-bold tabular-nums">
+            {rotatingAngleHud.deg}°
+          </span>
+          {rotatingAngleHud.isSnapped && (
+            <span
+              className={`w-2 h-2 rounded-full shrink-0 ${
+                rotatingAngleHud.isCardinal ? 'bg-emerald-500' : 'bg-blue-500'
+              }`}
+            />
+          )}
+        </div>
       )}
 
       {/* Live Corner Rounding Floating Pill (on Long-Tap of Selection Corner Handle) */}
@@ -4717,11 +5693,261 @@ export default function App() {
           </button>
           <button
             type="button"
-            onClick={handleDeleteSelected}
-            className="min-h-[38px] px-3 py-1.5 rounded-xl text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-500/10 flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              if (bottomDeleteLongPressTimerRef.current !== null) {
+                window.clearTimeout(bottomDeleteLongPressTimerRef.current);
+                bottomDeleteLongPressTimerRef.current = null;
+              }
+              bottomDeleteLongPressedRef.current = false;
+              bottomDeletePressStartRef.current = { x: e.clientX, y: e.clientY };
+              setBottomDeletePressing(true);
+              bottomDeleteLongPressTimerRef.current = window.setTimeout(() => {
+                bottomDeleteLongPressedRef.current = true;
+                bottomDeleteLongPressTimerRef.current = null;
+                setBottomDeletePressing(false);
+                if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+                  navigator.vibrate(18);
+                }
+                setClearConfirmOpen(true);
+              }, 450);
+            }}
+            onPointerMove={(e) => {
+              const start = bottomDeletePressStartRef.current;
+              if (start && Math.hypot(e.clientX - start.x, e.clientY - start.y) > 10) {
+                if (bottomDeleteLongPressTimerRef.current !== null) {
+                  window.clearTimeout(bottomDeleteLongPressTimerRef.current);
+                  bottomDeleteLongPressTimerRef.current = null;
+                }
+                bottomDeletePressStartRef.current = null;
+                setBottomDeletePressing(false);
+              }
+            }}
+            onPointerUp={() => {
+              if (bottomDeleteLongPressTimerRef.current !== null) {
+                window.clearTimeout(bottomDeleteLongPressTimerRef.current);
+                bottomDeleteLongPressTimerRef.current = null;
+              }
+              bottomDeletePressStartRef.current = null;
+              setBottomDeletePressing(false);
+            }}
+            onPointerCancel={() => {
+              if (bottomDeleteLongPressTimerRef.current !== null) {
+                window.clearTimeout(bottomDeleteLongPressTimerRef.current);
+                bottomDeleteLongPressTimerRef.current = null;
+              }
+              bottomDeletePressStartRef.current = null;
+              setBottomDeletePressing(false);
+            }}
+            onPointerLeave={() => {
+              if (bottomDeleteLongPressTimerRef.current !== null) {
+                window.clearTimeout(bottomDeleteLongPressTimerRef.current);
+                bottomDeleteLongPressTimerRef.current = null;
+              }
+              bottomDeletePressStartRef.current = null;
+              setBottomDeletePressing(false);
+            }}
+            onContextMenu={(e) => e.preventDefault()}
+            onClick={() => {
+              if (bottomDeleteLongPressedRef.current) {
+                bottomDeleteLongPressedRef.current = false;
+                return;
+              }
+              handleDeleteSelected();
+            }}
+            title={t('deleteClearHint')}
+            className={`min-h-[38px] px-3 py-1.5 rounded-xl text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-500/10 flex items-center gap-1.5 whitespace-nowrap cursor-pointer touch-manipulation transition-all ${
+              bottomDeletePressing ? 'scale-95 ring-2 ring-red-500/60' : ''
+            }`}
           >
             <Trash2 className="w-3.5 h-3.5" />
             <span>{t('objDelete')}</span>
+          </button>
+        </div>
+      )}
+
+      {/* Contextual Floating Bar for Marching-Ants Freehand Lasso Mode */}
+      {!isEditingBezier && !isEditingContour && activeMode === 'lasso' && (
+        <div
+          onPointerDown={(e) => e.stopPropagation()}
+          onTouchStart={(e) => e.stopPropagation()}
+          className={`fixed bottom-4 left-1/2 -translate-x-1/2 z-30 px-3 py-2 rounded-2xl border backdrop-blur-md flex items-center gap-2 shadow-xl max-w-[calc(100vw-24px)] ${
+            isDarkBg
+              ? 'bg-neutral-900/95 border-blue-500/50 text-neutral-100'
+              : 'bg-white/95 border-blue-300 text-slate-800'
+          }`}
+        >
+          <Scissors className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+          <span className="text-xs font-medium truncate">{t('lassoHint')}</span>
+          <button
+            type="button"
+            onClick={() => handleSelectMode('select')}
+            className={`min-h-[32px] px-2.5 py-1 rounded-xl text-xs font-semibold flex items-center gap-1 shrink-0 cursor-pointer ${
+              isDarkBg
+                ? 'bg-neutral-800 hover:bg-neutral-700 text-neutral-200'
+                : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+            }`}
+          >
+            <X className="w-3.5 h-3.5" />
+            <span>{t('contourCancel')}</span>
+          </button>
+        </div>
+      )}
+
+      {/* Clear Entire Canvas Confirmation Dialog (Triggered via Long-Tap on Delete / Eraser) */}
+      {clearConfirmOpen && (
+        <div
+          onPointerDown={(e) => e.stopPropagation()}
+          onTouchStart={(e) => e.stopPropagation()}
+          onClick={() => setClearConfirmOpen(false)}
+          className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className={`w-full max-w-sm rounded-3xl border p-5 shadow-2xl ${
+              isDarkBg
+                ? 'bg-neutral-900 border-neutral-700 text-neutral-100'
+                : 'bg-white border-slate-200 text-slate-900'
+            }`}
+          >
+            <div className="flex items-start gap-3 mb-4">
+              <div className="w-10 h-10 rounded-2xl bg-red-500/15 text-red-500 flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-sm font-bold">{t('clearCanvas')}</h3>
+                <p
+                  className={`text-xs mt-1 leading-relaxed ${
+                    isDarkBg ? 'text-neutral-400' : 'text-slate-500'
+                  }`}
+                >
+                  {t('clearConfirmPrompt')}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setClearConfirmOpen(false)}
+                className={`min-h-[38px] px-4 py-2 rounded-xl text-xs font-semibold cursor-pointer ${
+                  isDarkBg
+                    ? 'bg-neutral-800 hover:bg-neutral-700 text-neutral-200'
+                    : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                }`}
+              >
+                {t('clearConfirmNo')}
+              </button>
+              <button
+                type="button"
+                onClick={handleClearCanvas}
+                className="min-h-[38px] px-4 py-2 rounded-xl text-xs font-semibold bg-red-600 hover:bg-red-700 text-white cursor-pointer"
+              >
+                {t('clearConfirmYes')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Contextual Empty-Canvas Long-Tap Paste Menu in Select Mode */}
+      {canvasPasteMenu && activeMode === 'select' && (
+        <div
+          onPointerDown={(e) => e.stopPropagation()}
+          onTouchStart={(e) => e.stopPropagation()}
+          style={{
+            left: `${Math.max(
+              canvasPasteMenu.waitingNativePaste ? 140 : 76,
+              Math.min(
+                (typeof window !== 'undefined' ? window.innerWidth : 1024) -
+                  (canvasPasteMenu.waitingNativePaste ? 140 : 76),
+                canvasPasteMenu.clientX
+              )
+            )}px`,
+            top: `${Math.max(
+              62,
+              Math.min(
+                (typeof window !== 'undefined' ? window.innerHeight : 768) - 48,
+                canvasPasteMenu.clientY > 92
+                  ? canvasPasteMenu.clientY - 14
+                  : canvasPasteMenu.clientY + 48
+              )
+            )}px`,
+          }}
+          className={`fixed -translate-x-1/2 -translate-y-full z-40 p-1 rounded-2xl border backdrop-blur-md shadow-2xl flex items-center gap-1.5 ${
+            isDarkBg
+              ? 'bg-neutral-900/95 border-neutral-700 text-neutral-100 shadow-black/50'
+              : 'bg-white/95 border-slate-200 text-slate-800 shadow-slate-900/15'
+          }`}
+        >
+          {canvasPasteMenu.waitingNativePaste ? (
+            <div className="relative flex items-center gap-1.5">
+              <div
+                ref={pasteCatcherRef}
+                role="textbox"
+                aria-label={t('pasteFromClipboard')}
+                contentEditable
+                suppressContentEditableWarning
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setCanvasPasteMenu(null);
+                  }
+                }}
+                onInput={(e) => {
+                  // Keep box clean if OS autocomplete or keystrokes land inside
+                  e.currentTarget.textContent = '';
+                }}
+                onPaste={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const targetPt = {
+                    x: canvasPasteMenu.worldX,
+                    y: canvasPasteMenu.worldY,
+                  };
+                  const ok = handleClipboardDataTransfer(e.clipboardData, targetPt);
+                  e.currentTarget.textContent = '';
+                  setCanvasPasteMenu(null);
+                  if (!ok) {
+                    showPasteErrorToast('empty');
+                  }
+                }}
+                className={`min-h-[38px] min-w-[210px] max-w-[280px] px-3 py-2 rounded-xl border border-dashed text-xs font-medium outline-none flex items-center cursor-text select-text ${
+                  isDarkBg
+                    ? 'border-blue-400/70 bg-blue-500/10 text-transparent caret-blue-400'
+                    : 'border-blue-500/80 bg-blue-50 text-transparent caret-blue-600'
+                }`}
+              />
+              <div
+                className={`pointer-events-none absolute inset-0 px-3 flex items-center gap-1.5 text-[11px] font-semibold ${
+                  isDarkBg ? 'text-blue-300' : 'text-blue-700'
+                }`}
+              >
+                <ClipboardPaste className="w-3.5 h-3.5 shrink-0" />
+                <span className="truncate">{t('pasteBoxHint')}</span>
+              </div>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => void handlePasteFromCanvasMenu()}
+              className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap cursor-pointer active:scale-95 transition-transform"
+            >
+              <ClipboardPaste className="w-4 h-4 shrink-0" />
+              <span>{t('pasteFromClipboard')}</span>
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => setCanvasPasteMenu(null)}
+            aria-label={t('closeLabel')}
+            className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 cursor-pointer transition-colors ${
+              isDarkBg
+                ? 'hover:bg-neutral-800 text-neutral-400 hover:text-neutral-200'
+                : 'hover:bg-slate-100 text-slate-400 hover:text-slate-600'
+            }`}
+          >
+            <X className="w-3.5 h-3.5" />
           </button>
         </div>
       )}

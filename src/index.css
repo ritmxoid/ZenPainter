@@ -71,3 +71,16 @@
 .bp-scroll::-webkit-scrollbar-thumb:hover {
   background: rgba(100, 116, 139, 0.45);
 }
+
+@keyframes zp-marching-ants {
+  from {
+    stroke-dashoffset: 0;
+  }
+  to {
+    stroke-dashoffset: -12;
+  }
+}
+
+.zp-marching-arrow-stroke {
+  animation: zp-marching-ants 0.65s linear infinite;
+}

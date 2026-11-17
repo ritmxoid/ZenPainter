@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   ArrowDown,
   ArrowUp,
@@ -52,6 +52,7 @@ interface ObjectEditorPopoverProps {
   onSendToBack: () => void;
   onDuplicate: () => void;
   onDelete: () => void;
+  onRequestClearCanvas?: () => void;
   onClose: () => void;
   isDarkBg: boolean;
 }
@@ -71,12 +72,17 @@ export const ObjectEditorPopover: React.FC<ObjectEditorPopoverProps> = ({
   onSendToBack,
   onDuplicate,
   onDelete,
+  onRequestClearCanvas,
   onClose,
   isDarkBg,
 }) => {
   const patternLongPressTimerRef = useRef<number | null>(null);
   const patternLongPressTriggeredRef = useRef(false);
   const patternPressStartRef = useRef<{ x: number; y: number } | null>(null);
+  const deleteLongPressTimerRef = useRef<number | null>(null);
+  const deleteLongPressedRef = useRef(false);
+  const deletePressStartRef = useRef<{ x: number; y: number } | null>(null);
+  const [deletePressing, setDeletePressing] = useState(false);
   const fillPhotoInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -95,6 +101,15 @@ export const ObjectEditorPopover: React.FC<ObjectEditorPopoverProps> = ({
       patternLongPressTimerRef.current = null;
     }
     patternPressStartRef.current = null;
+  };
+
+  const stopDeleteLongPress = () => {
+    if (deleteLongPressTimerRef.current !== null) {
+      window.clearTimeout(deleteLongPressTimerRef.current);
+      deleteLongPressTimerRef.current = null;
+    }
+    deletePressStartRef.current = null;
+    setDeletePressing(false);
   };
 
   const linePatterns: Array<{ id: LinePattern; labelKey: TranslationKey; dash: string }> = [
@@ -911,8 +926,43 @@ export const ObjectEditorPopover: React.FC<ObjectEditorPopoverProps> = ({
           </button>
           <button
             type="button"
-            onClick={onDelete}
-            className="min-h-[42px] px-3 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-600 dark:text-red-400 text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+            onPointerDown={(e) => {
+              if (!onRequestClearCanvas) return;
+              stopDeleteLongPress();
+              deleteLongPressedRef.current = false;
+              deletePressStartRef.current = { x: e.clientX, y: e.clientY };
+              setDeletePressing(true);
+              deleteLongPressTimerRef.current = window.setTimeout(() => {
+                deleteLongPressedRef.current = true;
+                deleteLongPressTimerRef.current = null;
+                setDeletePressing(false);
+                if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+                  navigator.vibrate(18);
+                }
+                onRequestClearCanvas();
+              }, 450);
+            }}
+            onPointerMove={(e) => {
+              const st = deletePressStartRef.current;
+              if (st && Math.hypot(e.clientX - st.x, e.clientY - st.y) > 10) {
+                stopDeleteLongPress();
+              }
+            }}
+            onPointerUp={stopDeleteLongPress}
+            onPointerCancel={stopDeleteLongPress}
+            onPointerLeave={stopDeleteLongPress}
+            onContextMenu={(e) => e.preventDefault()}
+            onClick={() => {
+              if (deleteLongPressedRef.current) {
+                deleteLongPressedRef.current = false;
+                return;
+              }
+              onDelete();
+            }}
+            title={t('deleteClearHint')}
+            className={`min-h-[42px] px-3 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-600 dark:text-red-400 text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer touch-manipulation ${
+              deletePressing ? 'scale-95 ring-2 ring-red-500/60' : ''
+            }`}
           >
             <Trash2 className="w-3.5 h-3.5" />
             <span>{t('objDelete')}</span>

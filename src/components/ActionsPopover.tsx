@@ -772,8 +772,8 @@ export const ActionsPopover: React.FC<ActionsPopoverProps> = ({
                     true
                   )
                 }
-                title="W ↔ H"
-                aria-label="Swap dimensions"
+                title={`${t('swapDimensions')} (W ↔ H)`}
+                aria-label={t('swapDimensions')}
                 className={`min-h-[36px] w-9 shrink-0 rounded-lg border flex items-center justify-center transition-colors cursor-pointer ${
                   isDarkBg
                     ? 'bg-neutral-800 border-neutral-700 text-neutral-200 hover:bg-neutral-700'

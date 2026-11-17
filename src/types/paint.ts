@@ -1,5 +1,6 @@
 export type DrawMode =
   | 'select'
+  | 'lasso'
   | 'brush'
   | 'line'
   | 'bezier'

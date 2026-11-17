@@ -215,7 +215,7 @@ export const StampsPopover: React.FC<StampsPopoverProps> = ({
             <button
               type="button"
               onClick={() => setSearch('')}
-              aria-label="Clear search"
+              aria-label={t('clearSearch')}
               className={`absolute right-2 top-1/2 -translate-y-1/2 w-6 h-6 rounded-md flex items-center justify-center cursor-pointer ${mutedText} hover:text-blue-500`}
             >
               <X className="w-3.5 h-3.5" />
@@ -229,7 +229,7 @@ export const StampsPopover: React.FC<StampsPopoverProps> = ({
             <button
               type="button"
               onClick={() => scrollCategoryBar(-1)}
-              aria-label="Scroll categories left"
+              aria-label={t('scrollLeft')}
               className={`shrink-0 w-7 h-8 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${
                 isDarkBg
                   ? 'text-neutral-300 hover:bg-neutral-700/70 hover:text-white'
@@ -303,7 +303,7 @@ export const StampsPopover: React.FC<StampsPopoverProps> = ({
             <button
               type="button"
               onClick={() => scrollCategoryBar(1)}
-              aria-label="Scroll categories right"
+              aria-label={t('scrollRight')}
               className={`shrink-0 w-7 h-8 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${
                 isDarkBg
                   ? 'text-neutral-300 hover:bg-neutral-700/70 hover:text-white'
