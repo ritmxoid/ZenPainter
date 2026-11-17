@@ -762,7 +762,11 @@ export const ActionsPopover: React.FC<ActionsPopoverProps> = ({
 
               <button
                 type="button"
-                onClick={() =>
+                onClick={() => {
+                  trackFunction('swap_canvas_dimensions', 'canvas', {
+                    width: canvasSize.height,
+                    height: canvasSize.width,
+                  });
                   onChangeCanvasSize(
                     {
                       preset: 'custom',
@@ -770,8 +774,8 @@ export const ActionsPopover: React.FC<ActionsPopoverProps> = ({
                       height: canvasSize.width,
                     },
                     true
-                  )
-                }
+                  );
+                }}
                 title={`${t('swapDimensions')} (W ↔ H)`}
                 aria-label={t('swapDimensions')}
                 className={`min-h-[36px] w-9 shrink-0 rounded-lg border flex items-center justify-center transition-colors cursor-pointer ${

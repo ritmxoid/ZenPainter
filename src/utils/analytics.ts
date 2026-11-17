@@ -1,6 +1,6 @@
 import { APP_VERSION } from '../version';
 
-export const GTM_CONTAINER_ID = 'GTM-NTBW9FHG';
+export const GTM_CONTAINER_ID = 'GTM-549WT23V';
 
 declare global {
   interface Window {

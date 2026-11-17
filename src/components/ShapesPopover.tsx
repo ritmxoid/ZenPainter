@@ -514,7 +514,10 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
             {onClearSelection && (
               <button
                 type="button"
-                onClick={onClearSelection}
+                onClick={() => {
+                  trackFunction('clear_selection', 'selection', { source: 'shapes_popover' });
+                  onClearSelection();
+                }}
                 aria-label={t('clearSelection')}
                 className="w-6 h-6 rounded-lg flex items-center justify-center hover:bg-blue-500/20 cursor-pointer shrink-0"
               >
@@ -542,17 +545,29 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
                     ? arrowsExpanded
                     : false;
 
-              const toggleSubMenu = () => {
+              const toggleSubMenu = (source: 'rect' | 'polygons' | 'arrows') => {
                 if (isRectItem) {
-                  setRectExpanded((prev) => !prev);
+                  setRectExpanded((prev) => {
+                    const next = !prev;
+                    trackFunction('toggle_shape_submenu', 'tools', { submenu: source, is_open: next });
+                    return next;
+                  });
                   setPolygonsExpanded(false);
                   setArrowsExpanded(false);
                 } else if (isStarItem) {
-                  setPolygonsExpanded((prev) => !prev);
+                  setPolygonsExpanded((prev) => {
+                    const next = !prev;
+                    trackFunction('toggle_shape_submenu', 'tools', { submenu: source, is_open: next });
+                    return next;
+                  });
                   setRectExpanded(false);
                   setArrowsExpanded(false);
                 } else if (isArrowItem) {
-                  setArrowsExpanded((prev) => !prev);
+                  setArrowsExpanded((prev) => {
+                    const next = !prev;
+                    trackFunction('toggle_shape_submenu', 'tools', { submenu: source, is_open: next });
+                    return next;
+                  });
                   setRectExpanded(false);
                   setPolygonsExpanded(false);
                 }
@@ -565,25 +580,25 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
                   onClick={() => {
                     if (isRectItem) {
                       if (isEditingSelection && selectedInfo?.isRectEditable) {
-                        toggleSubMenu();
+                        toggleSubMenu('rect');
                       } else if (activeMode !== 'rect') {
                         onSelectMode('rect');
                         setRectExpanded(true);
                         setPolygonsExpanded(false);
                         setArrowsExpanded(false);
                       } else {
-                        toggleSubMenu();
+                        toggleSubMenu('rect');
                       }
                     } else if (isStarItem) {
                       if (isEditingSelection && selectedInfo?.isPolygonMorphable) {
-                        toggleSubMenu();
+                        toggleSubMenu('polygons');
                       } else if (activeMode !== 'star') {
                         onSelectMode('star');
                         setPolygonsExpanded(true);
                         setRectExpanded(false);
                         setArrowsExpanded(false);
                       } else {
-                        toggleSubMenu();
+                        toggleSubMenu('polygons');
                       }
                     } else if (isArrowItem) {
                       const isBlockVariant =
@@ -595,14 +610,14 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
                         onChangeStroke({ ...stroke, width: 1 });
                       }
                       if (isEditingSelection && selectedInfo?.isArrowMorphable) {
-                        toggleSubMenu();
+                        toggleSubMenu('arrows');
                       } else if (activeMode !== 'arrow') {
                         onSelectMode('arrow');
                         setArrowsExpanded(true);
                         setRectExpanded(false);
                         setPolygonsExpanded(false);
                       } else {
-                        toggleSubMenu();
+                        toggleSubMenu('arrows');
                       }
                     } else {
                       setRectExpanded(false);
@@ -637,7 +652,7 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
                     <span
                       onClick={(e) => {
                         e.stopPropagation();
-                        toggleSubMenu();
+                        toggleSubMenu(isRectItem ? 'rect' : isStarItem ? 'polygons' : 'arrows');
                       }}
                       className="absolute top-1 right-1 p-0.5 rounded hover:bg-black/10"
                     >
@@ -843,6 +858,7 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
                         ) {
                           onMorphSelectedPolygon(variant.id);
                         } else {
+                          trackFunction('select_polygon_variant', 'tools', { variant: variant.id });
                           onSelectMode('star');
                         }
                       }}
@@ -904,6 +920,7 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
                         ) {
                           onMorphSelectedArrow(variant.id);
                         } else {
+                          trackFunction('select_arrow_variant', 'tools', { variant: variant.id });
                           onSelectMode('arrow');
                         }
                       }}
@@ -991,6 +1008,7 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
                     ) {
                       onToggleSelectedClosedContour(nextVal);
                     } else {
+                      trackFunction('toggle_closed_contour', 'tools', { closed: nextVal });
                       onToggleClosedContour(nextVal);
                     }
                   }}
@@ -1009,7 +1027,11 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
               {canSnapEndpoints && (
                 <button
                   type="button"
-                  onClick={() => onToggleSnapEnabled(!snapEnabled)}
+                  onClick={() => {
+                    const nextSnap = !snapEnabled;
+                    trackFunction('toggle_endpoint_snap', 'tools', { enabled: nextSnap });
+                    onToggleSnapEnabled(nextSnap);
+                  }}
                   className={`flex-1 min-h-[38px] px-2.5 py-1.5 rounded-xl border text-[11px] font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
                     snapEnabled
                       ? 'border-emerald-500/80 bg-emerald-600 text-white shadow-sm'
@@ -1043,6 +1065,11 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
             max={50}
             value={canZeroStroke ? displayStroke.width : Math.max(1, displayStroke.width)}
             onChange={(e) => applyStrokeUpdate({ width: Number(e.target.value) })}
+            onPointerUp={() => {
+              if (!isEditingSelection) {
+                trackFunction('change_tool_stroke_width', 'tools', { width: displayStroke.width });
+              }
+            }}
             aria-label={t('strokeWidth')}
             className="w-full h-2 rounded-lg accent-blue-600 cursor-pointer"
           />
@@ -1070,7 +1097,12 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
                     key={hex}
                     type="button"
                     aria-label={hex}
-                    onClick={() => applyStrokeUpdate({ color: hex })}
+                    onClick={() => {
+                      applyStrokeUpdate({ color: hex });
+                      if (!isEditingSelection) {
+                        trackFunction('change_tool_stroke_color', 'tools', { color: hex });
+                      }
+                    }}
                     className={`w-6 h-6 rounded-full border transition-transform cursor-pointer ${
                       selected
                         ? 'ring-2 ring-blue-500 ring-offset-1 scale-110'
@@ -1107,6 +1139,13 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
               onChange={(e) =>
                 applyStrokeUpdate({ opacity: Number(e.target.value) / 100 })
               }
+              onPointerUp={() => {
+                if (!isEditingSelection) {
+                  trackFunction('change_tool_stroke_opacity', 'tools', {
+                    opacity: Math.round((displayStroke.opacity ?? 1) * 100),
+                  });
+                }
+              }}
               className="w-full h-2 rounded-lg accent-blue-600 cursor-pointer"
             />
           </div>
@@ -1400,7 +1439,12 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
                             key={hex}
                             type="button"
                             aria-label={hex}
-                            onClick={() => applyFillUpdate({ ...displayFill, color: hex })}
+                            onClick={() => {
+                              applyFillUpdate({ ...displayFill, color: hex });
+                              if (!isEditingSelection) {
+                                trackFunction('change_tool_fill_color', 'fill', { color: hex });
+                              }
+                            }}
                             className={`w-6 h-6 rounded-full border transition-transform cursor-pointer ${
                               selected
                                 ? 'ring-2 ring-blue-500 ring-offset-1 scale-110'
@@ -1441,6 +1485,13 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
                         opacity: Number(e.target.value) / 100,
                       })
                     }
+                    onPointerUp={() => {
+                      if (!isEditingSelection) {
+                        trackFunction('change_tool_fill_opacity', 'fill', {
+                          opacity: Math.round(displayFill.opacity * 100),
+                        });
+                      }
+                    }}
                     className="w-full h-2 rounded-lg accent-blue-600 cursor-pointer"
                   />
                 </div>

@@ -66,7 +66,7 @@ import {
   refreshObjectPhotoFill,
 } from './utils/canvasHelpers';
 import { APP_BUILD_ID, APP_VERSION, HIDE_TUTORIAL_STORAGE_KEY } from './version';
-import { trackFunction, trackWindowOpen } from './utils/analytics';
+import { trackFunction, trackWindowClose, trackWindowOpen } from './utils/analytics';
 import {
   attachEndpointControls,
   buildFabricPathFromWorldSegments,
@@ -1491,6 +1491,7 @@ export default function App() {
             fc.requestRenderAll();
             refreshSelectedInfo();
             saveHistory();
+            trackFunction('merge_endpoints', 'draw', { kind: 'self_close' });
             return;
           }
         } else if (
@@ -1513,6 +1514,7 @@ export default function App() {
             fc.requestRenderAll();
             refreshSelectedInfo();
             saveHistory();
+            trackFunction('merge_endpoints', 'draw', { kind: 'join_lines' });
             return;
           }
         }
@@ -2279,6 +2281,7 @@ export default function App() {
           });
         } else {
           refreshEmptyState();
+          trackFunction('lasso_cancel', 'selection', { points: pts.length });
         }
         return;
       }
@@ -2987,9 +2990,11 @@ export default function App() {
       }
       if (!selectedNew && sidebarOpenRef.current && activePopoverRef.current === 'shapes') {
         setActivePopover(null);
+        trackFunction('close_shapes_context_menu', 'ui');
       } else {
         setSidebarOpen(true);
         setActivePopover('shapes');
+        trackFunction('open_shapes_context_menu', 'ui', { selected_new: selectedNew });
       }
     };
 
@@ -3182,6 +3187,7 @@ export default function App() {
           setSelectedInfo(null);
           setObjectEditorOpen(false);
           saveHistory();
+          trackFunction('delete_selected_shortcut', 'edit', { count: active.length });
         }
         return;
       }
@@ -3259,18 +3265,30 @@ export default function App() {
   useEffect(() => {
     if (cornerRoundHud) {
       trackWindowOpen('corner_round_hud', { percent: cornerRoundHud.percent });
+      return () => trackWindowClose('corner_round_hud');
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [Boolean(cornerRoundHud)]);
+
+  const hasRotationHud = Boolean(rotatingAngleHud && !cornerRoundHud);
+  useEffect(() => {
+    if (hasRotationHud) {
+      trackWindowOpen('rotating_angle_hud');
+      return () => trackWindowClose('rotating_angle_hud');
+    }
+  }, [hasRotationHud]);
 
   useEffect(() => {
     if (isEditingBezier) {
       trackWindowOpen('bezier_editor_bar');
+      return () => trackWindowClose('bezier_editor_bar');
     }
   }, [isEditingBezier]);
 
   useEffect(() => {
     if (isEditingContour) {
       trackWindowOpen('contour_editor_bar');
+      return () => trackWindowClose('contour_editor_bar');
     }
   }, [isEditingContour]);
 
@@ -3283,9 +3301,33 @@ export default function App() {
         object_kind: selectedInfo.kind,
         selection_count: selectedInfo.selectionCount,
       });
+      return () => trackWindowClose('object_quick_bar');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasQuickBar]);
+
+  const hasLassoBar = Boolean(!isEditingBezier && !isEditingContour && activeMode === 'lasso');
+  useEffect(() => {
+    if (hasLassoBar) {
+      trackWindowOpen('lasso_mode_bar');
+      return () => trackWindowClose('lasso_mode_bar');
+    }
+  }, [hasLassoBar]);
+
+  useEffect(() => {
+    if (clearConfirmOpen) {
+      trackWindowOpen('clear_confirm_dialog');
+      return () => trackWindowClose('clear_confirm_dialog');
+    }
+  }, [clearConfirmOpen]);
+
+  const hasCanvasPasteMenu = Boolean(canvasPasteMenu && activeMode === 'select');
+  useEffect(() => {
+    if (hasCanvasPasteMenu) {
+      trackWindowOpen('canvas_paste_menu');
+      return () => trackWindowClose('canvas_paste_menu');
+    }
+  }, [hasCanvasPasteMenu]);
 
   // Sidebar & Tool Handlers
   const handleToggleSidebar = () => {
@@ -3494,6 +3536,7 @@ export default function App() {
   const showPasteErrorToast = useCallback((kind: 'empty' | 'blocked' = 'empty') => {
     setPastedToast(false);
     setPasteErrorKind(kind);
+    trackFunction('paste_error', 'clipboard', { kind });
     if (pasteErrorToastTimerRef.current) {
       window.clearTimeout(pasteErrorToastTimerRef.current);
     }
@@ -3924,6 +3967,7 @@ export default function App() {
     if (readAttemptSucceeded) {
       // System clipboard API succeeded and is genuinely empty
       setCanvasPasteMenu(null);
+      trackFunction('paste_menu_trigger', 'clipboard', { result: 'empty' });
       showPasteErrorToast('empty');
       return;
     }
@@ -3954,11 +3998,13 @@ export default function App() {
 
     if (execHandled) {
       setCanvasPasteMenu(null);
+      trackFunction('paste_menu_trigger', 'clipboard', { result: 'exec_handled' });
       return;
     }
 
     // Browser/iframe Permissions Policy blocked programmatic clipboard read:
     // keep the popup open and switch it to an auto-focused native Paste Catcher (works with Ctrl+V AND mobile OS long-tap Paste!)
+    trackFunction('paste_menu_trigger', 'clipboard', { result: 'waiting_native_paste' });
     setCanvasPasteMenu({
       ...currentMenu,
       waitingNativePaste: true,
@@ -5269,6 +5315,7 @@ export default function App() {
           setActivePopover(null);
           setObjectEditorOpen(false);
           setClearConfirmOpen(true);
+          trackFunction('request_clear_canvas', 'edit', { source: 'sidebar_eraser_longpress' });
         }}
         onTriggerImageUpload={() => {
           trackFunction('trigger_image_upload', 'insert');
@@ -5363,6 +5410,7 @@ export default function App() {
           onRequestClearCanvas={() => {
             setObjectEditorOpen(false);
             setClearConfirmOpen(true);
+            trackFunction('request_clear_canvas', 'edit', { source: 'object_editor_longpress' });
           }}
           onClose={() => setObjectEditorOpen(false)}
           isDarkBg={isDarkBg}
@@ -5440,6 +5488,7 @@ export default function App() {
           onRequestClearCanvas={() => {
             setActivePopover(null);
             setClearConfirmOpen(true);
+            trackFunction('request_clear_canvas', 'edit', { source: 'eraser_popover_longpress' });
           }}
           isDarkBg={isDarkBg}
         />
@@ -5549,6 +5598,10 @@ export default function App() {
                 cornerRoundingArmedObjRef.current = null;
               }
               cornerRoundingDragRef.current = null;
+              trackFunction('finish_corner_rounding', 'edit', {
+                percent: cornerRoundHud.percent,
+                source: 'hud_done',
+              });
               setCornerRoundHud(null);
               if (fc) {
                 fc.requestRenderAll();
@@ -5710,6 +5763,7 @@ export default function App() {
                   navigator.vibrate(18);
                 }
                 setClearConfirmOpen(true);
+                trackFunction('request_clear_canvas', 'edit', { source: 'quick_bar_longpress' });
               }, 450);
             }}
             onPointerMove={(e) => {
@@ -5799,7 +5853,10 @@ export default function App() {
         <div
           onPointerDown={(e) => e.stopPropagation()}
           onTouchStart={(e) => e.stopPropagation()}
-          onClick={() => setClearConfirmOpen(false)}
+          onClick={() => {
+            trackFunction('cancel_clear_canvas', 'edit', { source: 'backdrop' });
+            setClearConfirmOpen(false);
+          }}
           className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4"
         >
           <div
@@ -5828,7 +5885,10 @@ export default function App() {
             <div className="flex items-center justify-end gap-2">
               <button
                 type="button"
-                onClick={() => setClearConfirmOpen(false)}
+                onClick={() => {
+                  trackFunction('cancel_clear_canvas', 'edit', { source: 'cancel_button' });
+                  setClearConfirmOpen(false);
+                }}
                 className={`min-h-[38px] px-4 py-2 rounded-xl text-xs font-semibold cursor-pointer ${
                   isDarkBg
                     ? 'bg-neutral-800 hover:bg-neutral-700 text-neutral-200'
@@ -5939,7 +5999,10 @@ export default function App() {
           )}
           <button
             type="button"
-            onClick={() => setCanvasPasteMenu(null)}
+            onClick={() => {
+              trackFunction('close_paste_menu', 'clipboard');
+              setCanvasPasteMenu(null);
+            }}
             aria-label={t('closeLabel')}
             className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 cursor-pointer transition-colors ${
               isDarkBg
