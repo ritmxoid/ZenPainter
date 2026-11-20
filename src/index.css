@@ -1,58 +1,21 @@
 @import "tailwindcss";
-@custom-variant dark (&:where(.dark, .dark *));
 
-@layer base {
-  html,
-  body,
-  #root {
-    margin: 0;
-    padding: 0;
-    width: 100vw;
-    height: 100vh;
-    height: 100dvh;
-    overflow: hidden;
-    touch-action: none;
-    overscroll-behavior: none;
-    -webkit-user-select: none;
-    user-select: none;
-    -webkit-touch-callout: none;
-    -webkit-tap-highlight-color: transparent;
-    font-family: 'Plus Jakarta Sans', 'DM Sans', system-ui, -apple-system, sans-serif;
-    background-color: #ffffff;
-  }
-
-  input,
-  textarea,
-  select {
-    -webkit-user-select: text;
-    user-select: text;
-  }
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100dvh;
+  overflow: hidden;
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
 }
 
-.canvas-container,
-.lower-canvas,
-.upper-canvas {
-  touch-action: none !important;
-  overscroll-behavior: none !important;
-}
-
-/* Subtle custom scrollbars for popovers */
 .bp-scroll {
-  touch-action: pan-y;
-  overscroll-behavior: contain;
-  -webkit-overflow-scrolling: touch;
-}
-
-.bp-scroll-x {
-  touch-action: pan-x;
-  overscroll-behavior-x: contain;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-width: none;
-}
-
-.bp-scroll-x::-webkit-scrollbar {
-  display: none;
-  height: 0;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.45) transparent;
 }
 
 .bp-scroll::-webkit-scrollbar {
@@ -64,23 +27,37 @@
 }
 
 .bp-scroll::-webkit-scrollbar-thumb {
-  background: rgba(100, 116, 139, 0.25);
+  background: rgba(148, 163, 184, 0.45);
   border-radius: 9999px;
 }
 
-.bp-scroll::-webkit-scrollbar-thumb:hover {
-  background: rgba(100, 116, 139, 0.45);
+.bp-scroll-x {
+  scrollbar-width: none;
 }
 
-@keyframes zp-marching-ants {
-  from {
-    stroke-dashoffset: 0;
-  }
+.bp-scroll-x::-webkit-scrollbar {
+  display: none;
+}
+
+@keyframes zp-marching-arrow {
   to {
     stroke-dashoffset: -12;
   }
 }
 
 .zp-marching-arrow-stroke {
-  animation: zp-marching-ants 0.65s linear infinite;
+  animation: zp-marching-arrow 0.75s linear infinite;
+}
+
+.pt-safe {
+  padding-top: max(0.75rem, env(safe-area-inset-top));
+}
+
+.pb-safe {
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+}
+
+.px-safe {
+  padding-left: max(0.75rem, env(safe-area-inset-left));
+  padding-right: max(0.75rem, env(safe-area-inset-right));
 }

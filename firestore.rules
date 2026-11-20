@@ -1,0 +1,262 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    function isSignedIn() {
+      return request.auth != null
+        && request.auth.uid != null
+        && request.auth.token.firebase.sign_in_provider != 'anonymous';
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && !id.matches('.*[/\\\\].*');
+    }
+
+    // Enforces max 5 projects per account at rule level via fixed slot IDs 0..4
+    function isValidProjectSlotId(projectId) {
+      return projectId == request.auth.uid + '_0'
+        || projectId == request.auth.uid + '_1'
+        || projectId == request.auth.uid + '_2'
+        || projectId == request.auth.uid + '_3'
+        || projectId == request.auth.uid + '_4';
+    }
+
+    function isNonEmptyBoundedString(val, maxLen) {
+      return val is string && val.size() >= 1 && val.size() <= maxLen;
+    }
+
+    function isBoundedString(val, maxLen) {
+      return val is string && val.size() <= maxLen;
+    }
+
+    function isValidExpiry(ts) {
+      return ts is timestamp
+        && ts > request.time
+        && ts <= request.time + duration.value(31, 'd');
+    }
+
+    function isValidUserProfile(userId, data) {
+      return data.keys().hasAll(['uid', 'email', 'displayName', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'email', 'displayName', 'hideWelcomeTutorial', 'createdAt', 'updatedAt'])
+        && data.uid == userId
+        && isNonEmptyBoundedString(data.email, 320)
+        && isBoundedString(data.displayName, 100)
+        && (!('hideWelcomeTutorial' in data) || data.hideWelcomeTutorial is bool)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCanvasSize(cs) {
+      return cs is map
+        && cs.keys().hasAll(['preset', 'width', 'height'])
+        && cs.keys().hasOnly(['preset', 'width', 'height'])
+        && cs.preset in ['fullscreen', 'square', 'landscape', 'portrait', 'custom']
+        && cs.width is number && cs.width >= 50 && cs.width <= 10000
+        && cs.height is number && cs.height >= 50 && cs.height <= 10000;
+    }
+
+    function isValidBgConfig(bg) {
+      return bg is map
+        && bg.keys().hasAll(['mode', 'fillType', 'color1', 'color2', 'opacity', 'gradientType', 'gradientAngle'])
+        && bg.keys().hasOnly(['mode', 'fillType', 'color1', 'color2', 'opacity', 'gradientType', 'gradientAngle'])
+        && bg.mode in ['white', 'grid', 'lined', 'dark', 'custom']
+        && bg.fillType in ['solid', 'gradient']
+        && isNonEmptyBoundedString(bg.color1, 40)
+        && isBoundedString(bg.color2, 40)
+        && bg.opacity is number && bg.opacity >= 0 && bg.opacity <= 1
+        && bg.gradientType in ['linear', 'radial']
+        && bg.gradientAngle is number && bg.gradientAngle >= 0 && bg.gradientAngle <= 360;
+    }
+
+    function isValidCanvasData(cd) {
+      return cd is map
+        && cd.keys().hasAll(['version', 'objects'])
+        && isBoundedString(cd.version, 40)
+        && cd.objects is list
+        && cd.objects.size() <= 3000;
+    }
+
+    function isValidProjectMeta(projectId, data) {
+      return data.keys().hasAll([
+          'id', 'ownerId', 'title', 'appVersion', 'objectCount',
+          'approxBytes', 'preset', 'width', 'height',
+          'createdAt', 'updatedAt', 'expiresAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'ownerId', 'title', 'appVersion', 'objectCount',
+          'approxBytes', 'preset', 'width', 'height',
+          'createdAt', 'updatedAt', 'expiresAt'
+        ])
+        && data.id == projectId
+        && data.ownerId is string && data.ownerId == request.auth.uid
+        && isNonEmptyBoundedString(data.title, 120)
+        && isNonEmptyBoundedString(data.appVersion, 24)
+        && data.objectCount is number && data.objectCount >= 0 && data.objectCount <= 5000
+        && data.approxBytes is number && data.approxBytes >= 0 && data.approxBytes <= 1048576
+        && data.preset in ['fullscreen', 'square', 'landscape', 'portrait', 'custom']
+        && data.width is number && data.width >= 50 && data.width <= 10000
+        && data.height is number && data.height >= 50 && data.height <= 10000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp
+        && isValidExpiry(data.expiresAt);
+    }
+
+    function isValidCloudProject(projectId, data) {
+      return data.keys().hasAll([
+          'id', 'ownerId', 'title', 'appVersion', 'objectCount',
+          'exportScope', 'canvasSize', 'bgConfig', 'canvasData',
+          'createdAt', 'updatedAt', 'expiresAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'ownerId', 'title', 'appVersion', 'objectCount',
+          'exportScope', 'canvasSize', 'bgConfig', 'canvasData',
+          'createdAt', 'updatedAt', 'expiresAt'
+        ])
+        && data.id == projectId
+        && data.ownerId is string && data.ownerId == request.auth.uid
+        && isNonEmptyBoundedString(data.title, 120)
+        && isNonEmptyBoundedString(data.appVersion, 24)
+        && data.objectCount is number && data.objectCount >= 0 && data.objectCount <= 5000
+        && data.exportScope in ['canvas', 'artwork']
+        && isValidCanvasSize(data.canvasSize)
+        && isValidBgConfig(data.bgConfig)
+        && isValidCanvasData(data.canvasData)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp
+        && isValidExpiry(data.expiresAt);
+    }
+
+    function isValidCloudDraft(userId, data) {
+      return data.keys().hasAll([
+          'ownerId', 'appVersion', 'objectCount',
+          'exportScope', 'canvasSize', 'bgConfig', 'canvasData',
+          'activeProjectId', 'activeProjectTitle',
+          'createdAt', 'updatedAt', 'expiresAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'appVersion', 'objectCount',
+          'exportScope', 'canvasSize', 'bgConfig', 'canvasData',
+          'activeProjectId', 'activeProjectTitle',
+          'createdAt', 'updatedAt', 'expiresAt'
+        ])
+        && data.ownerId is string && data.ownerId == userId
+        && isNonEmptyBoundedString(data.appVersion, 24)
+        && data.objectCount is number && data.objectCount >= 0 && data.objectCount <= 5000
+        && data.exportScope in ['canvas', 'artwork']
+        && isValidCanvasSize(data.canvasSize)
+        && isValidBgConfig(data.bgConfig)
+        && isValidCanvasData(data.canvasData)
+        && isBoundedString(data.activeProjectId, 128)
+        && isBoundedString(data.activeProjectTitle, 120)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp
+        && isValidExpiry(data.expiresAt);
+    }
+
+    // ===============================================================
+    // Collection Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow get: if isOwner(userId);
+      allow list: if false;
+      allow create: if isOwner(userId)
+        && isValidId(userId)
+        && isValidUserProfile(userId, request.resource.data)
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
+      allow update: if isOwner(userId)
+        && isValidUserProfile(userId, request.resource.data)
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'email', 'displayName', 'hideWelcomeTutorial', 'updatedAt'
+        ]);
+      allow delete: if isOwner(userId);
+    }
+
+    match /projectMetas/{projectId} {
+      allow get: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow create: if isSignedIn()
+        && isValidId(projectId)
+        && isValidProjectSlotId(projectId)
+        && isValidProjectMeta(projectId, request.resource.data)
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
+      allow update: if isSignedIn()
+        && resource.data.ownerId == request.auth.uid
+        && isValidProjectMeta(projectId, request.resource.data)
+        && request.resource.data.id == resource.data.id
+        && request.resource.data.ownerId == resource.data.ownerId
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'title', 'appVersion', 'objectCount', 'approxBytes',
+          'preset', 'width', 'height', 'updatedAt', 'expiresAt'
+        ]);
+      allow delete: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+    }
+
+    match /projects/{projectId} {
+      allow get: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow create: if isSignedIn()
+        && isValidId(projectId)
+        && isValidProjectSlotId(projectId)
+        && isValidCloudProject(projectId, request.resource.data)
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
+      allow update: if isSignedIn()
+        && resource.data.ownerId == request.auth.uid
+        && isValidCloudProject(projectId, request.resource.data)
+        && request.resource.data.id == resource.data.id
+        && request.resource.data.ownerId == resource.data.ownerId
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'title', 'appVersion', 'objectCount', 'exportScope',
+          'canvasSize', 'bgConfig', 'canvasData', 'updatedAt', 'expiresAt'
+        ]);
+      allow delete: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+    }
+
+    match /userDrafts/{userId} {
+      allow get: if isOwner(userId);
+      allow list: if false;
+      allow create: if isOwner(userId)
+        && isValidId(userId)
+        && isValidCloudDraft(userId, request.resource.data)
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
+      allow update: if isOwner(userId)
+        && isValidCloudDraft(userId, request.resource.data)
+        && request.resource.data.ownerId == resource.data.ownerId
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'appVersion', 'objectCount', 'exportScope', 'canvasSize',
+          'bgConfig', 'canvasData', 'activeProjectId', 'activeProjectTitle',
+          'updatedAt', 'expiresAt'
+        ]);
+      allow delete: if isOwner(userId);
+    }
+
+    // Default deny for everything else
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   ArrowLeftRight,
+  Cloud,
   Crop,
   Download,
   Globe,
@@ -27,6 +28,7 @@ import {
 } from '../types/paint';
 import { hexToRgb, rgbToHex } from '../utils/canvasHelpers';
 import { trackFunction, trackWindowClose, trackWindowOpen } from '../utils/analytics';
+import { PWAInstallButton } from './PWAInstallButton';
 
 interface ActionsPopoverProps {
   t: (key: TranslationKey) => string;
@@ -43,7 +45,10 @@ interface ActionsPopoverProps {
   languagePref: LanguagePreference;
   onChangeLanguage: (pref: LanguagePreference) => void;
   onOpenHelp: () => void;
+  onOpenCloudSave: () => void;
+  cloudUserEmail?: string | null;
   onTriggerOfflineDownload: () => void;
+  onTriggerZipDownload: () => void;
   isDarkBg: boolean;
 }
 
@@ -75,14 +80,18 @@ export const ActionsPopover: React.FC<ActionsPopoverProps> = ({
   languagePref,
   onChangeLanguage,
   onOpenHelp,
+  onOpenCloudSave,
+  cloudUserEmail,
   onTriggerOfflineDownload,
+  onTriggerZipDownload,
   isDarkBg,
 }) => {
   const [mixerOpen, setMixerOpen] = useState(bgConfig.mode === 'custom');
   const [activeStop, setActiveStop] = useState<1 | 2>(1);
   const [widthDraft, setWidthDraft] = useState(String(canvasSize.width));
   const [heightDraft, setHeightDraft] = useState(String(canvasSize.height));
-  const lastSecretTapRef = useRef<number>(0);
+  const secretTapCountRef = useRef<number>(0);
+  const secretTapTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     trackWindowOpen('actions_popover', {
@@ -90,18 +99,40 @@ export const ActionsPopover: React.FC<ActionsPopoverProps> = ({
       canvas_preset: canvasSize.preset,
       zoom_percent: zoomPercent,
     });
-    return () => trackWindowClose('actions_popover');
+    return () => {
+      if (secretTapTimerRef.current !== null) {
+        window.clearTimeout(secretTapTimerRef.current);
+        secretTapTimerRef.current = null;
+      }
+      trackWindowClose('actions_popover');
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleSecretAreaClick = () => {
-    const now = Date.now();
-    if (now - lastSecretTapRef.current <= 450) {
-      lastSecretTapRef.current = 0;
-      onTriggerOfflineDownload();
-    } else {
-      lastSecretTapRef.current = now;
+    if (secretTapTimerRef.current !== null) {
+      window.clearTimeout(secretTapTimerRef.current);
+      secretTapTimerRef.current = null;
     }
+
+    secretTapCountRef.current += 1;
+    const count = secretTapCountRef.current;
+
+    if (count >= 3) {
+      secretTapCountRef.current = 0;
+      onTriggerZipDownload();
+      return;
+    }
+
+    const waitMs = count === 2 ? 360 : 450;
+    secretTapTimerRef.current = window.setTimeout(() => {
+      const finalCount = secretTapCountRef.current;
+      secretTapCountRef.current = 0;
+      secretTapTimerRef.current = null;
+      if (finalCount === 2) {
+        onTriggerOfflineDownload();
+      }
+    }, waitMs);
   };
 
   useEffect(() => {
@@ -251,6 +282,24 @@ export const ActionsPopover: React.FC<ActionsPopoverProps> = ({
               <span>JPG</span>
             </button>
           </div>
+          <button
+            type="button"
+            onClick={() => {
+              trackFunction('open_cloud_save_modal', 'cloud', {
+                signed_in: Boolean(cloudUserEmail),
+              });
+              onOpenCloudSave();
+            }}
+            className="w-full min-h-[44px] px-3 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer shadow-sm"
+          >
+            <Cloud className="w-4 h-4 shrink-0" />
+            <span className="truncate">{t('saveToCloud')}</span>
+            {cloudUserEmail && (
+              <span className="ml-auto max-w-[96px] truncate rounded-md bg-white/20 px-1.5 py-0.5 text-[10px] font-medium">
+                {cloudUserEmail}
+              </span>
+            )}
+          </button>
         </div>
 
         <hr className={divider} />
@@ -889,6 +938,9 @@ export const ActionsPopover: React.FC<ActionsPopoverProps> = ({
 
         <hr className={divider} />
 
+        {/* PWA Fullscreen Install Trigger (auto-hides when installed) */}
+        <PWAInstallButton isDarkBg={isDarkBg} fullWidth />
+
         {/* Help & Interactive Tour */}
         <button
           type="button"
@@ -919,7 +971,7 @@ export const ActionsPopover: React.FC<ActionsPopoverProps> = ({
             ...by RitmXoid
           </a>
 
-          {/* Invisible horizontal bottom-margin button (double-tap/double-click to download offline index.html) */}
+          {/* Invisible horizontal bottom-margin button (2 taps: offline index.html, 3 taps: project backup .zip) */}
           <button
             type="button"
             tabIndex={-1}

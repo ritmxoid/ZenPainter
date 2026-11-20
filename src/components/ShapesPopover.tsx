@@ -1,13 +1,17 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  Brush,
   ChevronDown,
   Circle,
   Droplets,
+  Feather,
+  Flame,
   Grid3X3,
   Image as ImageIcon,
   Magnet,
   Minus,
   MousePointer2,
+  PaintRoller,
   Pencil,
   Plus,
   RefreshCw,
@@ -15,6 +19,7 @@ import {
   Spline,
   Square,
   Triangle,
+  Waves,
   X,
 } from 'lucide-react';
 import { QUICK_COLOR_SWATCHES } from '../constants/fonts';
@@ -265,6 +270,8 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
     patternPressStartRef.current = null;
   };
 
+  const isVectorBrush = (bt: BrushType) => bt === 'standard' || bt === 'soft';
+
   const brushTypes: Array<{
     id: BrushType;
     labelKey: TranslationKey;
@@ -273,6 +280,12 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
     { id: 'standard', labelKey: 'brushStandard', icon: <Pencil className="w-3.5 h-3.5" /> },
     { id: 'soft', labelKey: 'brushSoft', icon: <Droplets className="w-3.5 h-3.5" /> },
     { id: 'spray', labelKey: 'brushSpray', icon: <Sparkles className="w-3.5 h-3.5" /> },
+    { id: 'stroke', labelKey: 'brushStroke', icon: <Brush className="w-3.5 h-3.5" /> },
+    { id: 'roller', labelKey: 'brushRoller', icon: <PaintRoller className="w-3.5 h-3.5" /> },
+    { id: 'dry', labelKey: 'brushDry', icon: <Waves className="w-3.5 h-3.5" /> },
+    { id: 'watercolor', labelKey: 'brushWatercolor', icon: <Droplets className="w-3.5 h-3.5" /> },
+    { id: 'charcoal', labelKey: 'brushCharcoal', icon: <Flame className="w-3.5 h-3.5" /> },
+    { id: 'calligraphy', labelKey: 'brushCalligraphy', icon: <Feather className="w-3.5 h-3.5" /> },
   ];
 
   const activePolyId =
@@ -306,6 +319,19 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
     { id: 'select', labelKey: 'modeSelect', icon: <MousePointer2 className="w-4 h-4" /> },
     { id: 'brush', labelKey: 'modeBrush', icon: <Pencil className="w-4 h-4" /> },
     { id: 'line', labelKey: 'modeLine', icon: <Minus className="w-4 h-4" /> },
+    {
+      id: 'polyline',
+      labelKey: 'modePolyline',
+      icon: (
+        <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="4 17 10 7 15 15 20 6" />
+          <circle cx="4" cy="17" r="1.5" fill="currentColor" />
+          <circle cx="10" cy="7" r="1.5" fill="currentColor" />
+          <circle cx="15" cy="15" r="1.5" fill="currentColor" />
+          <circle cx="20" cy="6" r="1.5" fill="currentColor" />
+        </svg>
+      ),
+    },
     { id: 'bezier', labelKey: 'modeBezier', icon: <Spline className="w-4 h-4" /> },
     { id: 'ellipse', labelKey: 'modeEllipse', icon: <Circle className="w-4 h-4" /> },
     {
@@ -445,15 +471,20 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
 
   const canCloseContour =
     activeMode === 'line' ||
+    activeMode === 'polyline' ||
     activeMode === 'bezier' ||
-    (activeMode === 'brush' && stroke.brushType !== 'spray') ||
+    (activeMode === 'brush' && isVectorBrush(stroke.brushType)) ||
     Boolean(isEditingSelection && selectedInfo?.canToggleClosedContour);
   const displayClosedContour =
     isEditingSelection && selectedInfo?.canToggleClosedContour
       ? Boolean(selectedInfo.isClosedContour)
       : closedContour;
   const canSnapEndpoints =
-    activeMode === 'line' || activeMode === 'bezier' || activeMode === 'select';
+    activeMode === 'line' ||
+    activeMode === 'polyline' ||
+    activeMode === 'bezier' ||
+    activeMode === 'brush' ||
+    activeMode === 'select';
   const isFilledArrowActive =
     (activeMode === 'arrow' &&
       (arrowVariant === 'filled' || arrowVariant === 'filledDouble')) ||
@@ -476,7 +507,7 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
     Boolean(
       isEditingSelection &&
         selectedInfo?.brushType &&
-        selectedInfo.brushType !== 'spray'
+        isVectorBrush(selectedInfo.brushType)
     );
 
   const surface = isDarkBg
@@ -627,8 +658,9 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
                         CLOSED_SHAPE_MODES.includes(item.id) ||
                         (closedContour &&
                           (item.id === 'line' ||
+                            item.id === 'polyline' ||
                             item.id === 'bezier' ||
-                            (item.id === 'brush' && stroke.brushType !== 'spray')));
+                            (item.id === 'brush' && isVectorBrush(stroke.brushType))));
                       if (
                         stroke.width === 0 &&
                         !(supportsClosedWithFill && fill.mode !== 'none')
@@ -944,7 +976,7 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
             </div>
           )}
 
-          {/* Brush Type Selector (Standard / Soft Edge / Spray) */}
+          {/* Brush Type Selector (Standard / Soft / Spray + Nested Texture Brushes) */}
           {showBrushTypes && (
             <div className="mt-2.5">
               <div className={`text-[11px] font-medium mb-1.5 ${mutedText}`}>
@@ -956,7 +988,7 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
                 }`}
               >
                 {(isEditingSelection
-                  ? brushTypes.filter((b) => b.id !== 'spray')
+                  ? brushTypes.filter((b) => isVectorBrush(b.id))
                   : brushTypes
                 ).map((bt) => {
                   const active = displayStroke.brushType === bt.id;
@@ -966,23 +998,22 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
                       type="button"
                       onClick={() =>
                         applyStrokeUpdate(
-                          bt.id === 'spray' && displayStroke.width === 0
-                            ? { brushType: bt.id, width: 1 }
+                          !isVectorBrush(bt.id) && displayStroke.width === 0
+                            ? { brushType: bt.id, width: Math.max(4, stroke.width || 8) }
                             : { brushType: bt.id }
                         )
                       }
-                      className={`min-h-[40px] px-1.5 py-1 rounded-lg flex items-center justify-center gap-1.5 text-[11px] font-medium transition-colors cursor-pointer ${
+                      title={t(bt.labelKey)}
+                      className={`min-h-[40px] px-1.5 py-1 rounded-lg flex flex-col items-center justify-center gap-0.5 text-[10px] font-medium transition-colors cursor-pointer ${
                         active
-                          ? isDarkBg
-                            ? 'bg-neutral-900 text-white shadow-sm'
-                            : 'bg-white text-slate-900 shadow-sm'
+                          ? 'bg-blue-600 text-white shadow-sm'
                           : isDarkBg
-                            ? 'text-neutral-300 hover:text-white'
-                            : 'text-slate-600 hover:text-slate-900'
+                            ? 'text-neutral-300 hover:bg-neutral-700/60 hover:text-white'
+                            : 'text-slate-600 hover:bg-white/70 hover:text-slate-900'
                       }`}
                     >
                       {bt.icon}
-                      <span className="truncate">{t(bt.labelKey)}</span>
+                      <span className="truncate max-w-full leading-tight">{t(bt.labelKey)}</span>
                     </button>
                   );
                 })}
@@ -1154,7 +1185,7 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
           {selectedInfo?.kind !== 'image' && !selectedInfo?.isSpray && (
             <div
               className={
-                !isEditingSelection && activeMode === 'brush' && stroke.brushType === 'spray'
+                !isEditingSelection && activeMode === 'brush' && !isVectorBrush(stroke.brushType)
                   ? 'opacity-50 pointer-events-none'
                   : ''
               }

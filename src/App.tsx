@@ -1,16 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { onAuthStateChanged, type User } from 'firebase/auth';
 import {
-  Check,
-  ClipboardPaste,
-  Copy,
-  Layers,
-  Pencil,
-  RotateCw,
-  Scissors,
-  Trash2,
-  X,
-} from 'lucide-react';
+  beginStroke,
+  cropOpaqueCanvasBounds,
+  drawSegment,
+  finishStroke,
+  type BrushPresetId,
+  type StrokeSession,
+} from './brushes/brushEngine';
 import { ActionsPopover } from './components/ActionsPopover';
+import { CloudSaveModal } from './components/CloudSaveModal';
 import { EraserPopover } from './components/EraserPopover';
 import { HelpModal } from './components/HelpModal';
 import { ObjectEditorPopover } from './components/ObjectEditorPopover';
@@ -18,44 +17,59 @@ import { RightSidebar } from './components/RightSidebar';
 import { ShapesPopover } from './components/ShapesPopover';
 import { StampsPopover } from './components/StampsPopover';
 import { TextModal } from './components/TextModal';
+import { auth } from './firebase';
+import {
+  clearCloudDraft,
+  type CloudProjectRecord,
+  ensureUserProfile,
+  loadCloudDraft,
+  saveCloudDraft,
+  saveCloudProject,
+  updateUserTutorialPref,
+} from './services/cloudProjects';
 import {
   getSavedLanguagePreference,
   resolveLanguage,
   saveLanguagePreference,
-  TranslationKey,
   translations,
+  type TranslationKey,
 } from './i18n/translations';
 import {
-  ActivePopover,
-  ArrowVariant,
-  BackgroundConfig,
-  BackgroundMode,
-  BrushType,
-  CanvasSizeConfig,
-  DrawMode,
-  EmojiDefinition,
-  ExportScope,
-  FillSettings,
-  LanguagePreference,
-  LinePattern,
-  PolygonVariant,
-  RectGridConfig,
-  SelectedObjectInfo,
-  SelectedObjectKind,
-  StampDefinition,
-  StrokeSettings,
+  type ActivePopover,
+  type ArrowVariant,
+  type BackgroundConfig,
+  type BackgroundMode,
+  type BrushType,
+  type CanvasSizeConfig,
+  type DrawMode,
+  type EmojiDefinition,
+  type ExportScope,
+  type FillSettings,
+  type LanguagePreference,
+  type LinePattern,
+  type PolygonVariant,
+  type RectGridConfig,
+  type SelectedObjectInfo,
+  type SelectedObjectKind,
+  type StampDefinition,
+  type StrokeSettings,
 } from './types/paint';
+import { trackFunction } from './utils/analytics';
 import {
   applyColorOpacity,
   applyCornerRoundingToObject,
   applyFillToObject,
   buildFillValue,
   buildPolygonPoints,
+  compressDataUrlToMaxBytes,
   createArrowObject,
+  downscaleImageFileToDataUrl,
   drawBackgroundToContext,
   exportCanvasImage,
+  getArtboardWorldRect,
   getFabric,
   getObjectCornerRoundRatio,
+  getObjectCornerWorldVertices,
   getObjectScreenRect,
   getScaledDashArray,
   hasFillableStampParts,
@@ -65,307 +79,208 @@ import {
   parseColorAndOpacity,
   refreshObjectPhotoFill,
 } from './utils/canvasHelpers';
-import { APP_BUILD_ID, APP_VERSION, HIDE_TUTORIAL_STORAGE_KEY } from './version';
-import { trackFunction, trackWindowClose, trackWindowOpen } from './utils/analytics';
+import { drawLassoOverlayOnContext, extractLassoFragment, type LassoPoint } from './utils/lassoHelper';
 import {
   attachEndpointControls,
   buildFabricPathFromWorldSegments,
   convertClosedContourToOpen,
   convertObjectToClosedContour,
   detachEndpointControls,
-  EndpointSnapMatch,
+  extractWorldPathSegmentsForEdit,
   findNearestEndpointSnap,
+  getObjectBezierControlHandles,
+  getObjectEditableWorldVertices,
   getObjectWorldEndpoints,
   hasPathCloseCommand,
+  isBezierPathObject,
   isMergeableOpenLine,
-  mergeTwoOpenObjects,
+  isObjectVertexEditable,
+  mergeObjectWithEndpointSnaps,
+  segmentsToPathCommands,
+  updateObjectBezierHandle,
+  updateObjectEditableVertex,
   updateOpenObjectEndpoint,
+  type Point2D,
+  type WorldSegment,
 } from './utils/pathSnapping';
-import {
-  drawLassoOverlayOnContext,
-  extractLassoFragment,
-  LassoPoint,
-} from './utils/lassoHelper';
+import { HIDE_TUTORIAL_STORAGE_KEY } from './version';
 
-const MAX_HISTORY = 30;
-const CUSTOM_JSON_PROPS = [
-  'globalCompositeOperation',
-  'selectable',
-  'evented',
-  'strokeUniform',
-  'isEraserPath',
-  'isArrowGroup',
-  'isStampGroup',
-  'isSprayGroup',
-  'stampColor',
+const CUSTOM_FABRIC_PROPS = [
+  'fillMeta',
   'strokeColorHex',
   'strokeOpacity',
-  'fillMeta',
   'strokePattern',
   'doubleLine',
   'brushType',
-  'shadow',
-  'perPixelTargetFind',
-  'targetFindTolerance',
+  'isSprayGroup',
+  'isEraserPath',
+  'isClosedContour',
+  'isBezierCurve',
+  'isArrowGroup',
+  'isArrowObject',
+  'arrowVariant',
+  'arrowEndpoints',
+  'isPolygonMorphable',
+  'polygonVariant',
   'baseLocalPoints',
+  'basePathCommands',
   'baseWidth',
   'baseHeight',
   'basePathOffset',
-  'basePathCommands',
   'cornerRoundRatio',
-  'shapeSubtype',
-  'isClosedContour',
   'isGridRect',
   'gridRows',
   'gridCols',
-  'isArrowObject',
-  'arrowVariant',
-  'arrowLength',
-  'isArrowShaft',
-  'isArrowHeadStroke',
-  'isArrowHeadFill',
-  'isArrowTailDot',
+  'isStampGroup',
+  'isTexturedBrushStroke',
+  'worldEndpoints',
+  'perPixelTargetFind',
+  'targetFindTolerance',
+  'cornerColor',
+  'borderColor',
+  'selectable',
+  'evented',
+  'globalCompositeOperation',
 ];
 
-interface Point {
-  x: number;
-  y: number;
+const TEXTURED_BRUSH_TYPES: ReadonlySet<BrushType> = new Set([
+  'stroke',
+  'roller',
+  'dry',
+  'watercolor',
+  'charcoal',
+  'calligraphy',
+]);
+
+function isTexturedBrush(bt: BrushType): bt is Exclude<BrushPresetId, 'spray'> {
+  return TEXTURED_BRUSH_TYPES.has(bt);
 }
 
-interface BezierSession {
-  pathObj: any;
-  p0: Point;
-  cp1: Point;
-  cp2: Point;
-  p3: Point;
-  h0: any;
-  hc1: any;
-  hc2: any;
-  h3: any;
-  g1: any;
-  g2: any;
-}
+const DEFAULT_BG: BackgroundConfig = {
+  mode: 'white',
+  fillType: 'solid',
+  color1: '#FFFFFF',
+  color2: '#EFF6FF',
+  opacity: 1,
+  gradientType: 'linear',
+  gradientAngle: 135,
+};
 
-function getEditableTargets(activeObj: any): any[] {
-  if (!activeObj) return [];
-  if (activeObj.type === 'activeSelection' && typeof activeObj.getObjects === 'function') {
-    return activeObj
-      .getObjects()
-      .filter((o: any) => o && !o.excludeFromExport && !o.isEraserPath);
-  }
-  if (activeObj.excludeFromExport || activeObj.isEraserPath) return [];
-  return [activeObj];
-}
+const DEFAULT_STROKE: StrokeSettings = {
+  color: '#0F172A',
+  opacity: 1,
+  width: 6,
+  pattern: 'solid',
+  brushType: 'standard',
+  doubleLine: false,
+};
 
-function isClosedFillableObject(obj: any): boolean {
-  if (!obj || obj.excludeFromExport || obj.isEraserPath || obj.isArrowGroup || obj.isSprayGroup) {
-    return false;
-  }
-  if (obj.isStampGroup) {
-    return hasFillableStampParts(obj);
-  }
-  return (
-    obj.type === 'rect' ||
-    obj.type === 'triangle' ||
-    obj.type === 'ellipse' ||
-    obj.type === 'circle' ||
-    obj.type === 'polygon' ||
-    (obj.type === 'path' && (Boolean(obj.isClosedContour) || hasPathCloseCommand(obj)))
-  );
-}
+const DEFAULT_FILL: FillSettings = {
+  mode: 'none',
+  color: '#3B82F6',
+  opacity: 0.35,
+  hatchPattern: 'diagonal',
+};
 
-function extractObjectInfo(activeObj: any): SelectedObjectInfo | null {
-  if (!activeObj || activeObj.excludeFromExport) return null;
+const ARTBOARD_CENTER = { x: 0, y: 0 };
 
-  const targets = getEditableTargets(activeObj);
-  if (targets.length === 0) return null;
+function createGridRectGroup(
+  fabric: any,
+  left: number,
+  top: number,
+  width: number,
+  height: number,
+  rows: number,
+  cols: number,
+  strokeCfg: StrokeSettings,
+  fillCfg: FillSettings
+): any {
+  const safeW = Math.max(8, width);
+  const safeH = Math.max(8, height);
+  const sw = Math.max(1, strokeCfg.width);
+  const strokeRgba = applyColorOpacity(strokeCfg.color, strokeCfg.opacity);
+  const dash = getScaledDashArray(strokeCfg.pattern, sw);
 
-  const obj = targets[0];
-  const anyClosed = targets.some((t) => isClosedFillableObject(t));
-  const firstClosedTarget = targets.find((t) => isClosedFillableObject(t)) || obj;
+  const outer = new fabric.Rect({
+    left: -safeW / 2,
+    top: -safeH / 2,
+    width: safeW,
+    height: safeH,
+    fill: buildFillValue(fillCfg, safeW, safeH),
+    stroke: strokeRgba,
+    strokeWidth: sw,
+    strokeDashArray: dash || undefined,
+    strokeUniform: true,
+    originX: 'left',
+    originY: 'top',
+  });
 
-  let kind: SelectedObjectKind = 'shape';
-  if (targets.length === 1 && obj.type === 'image') {
-    kind = 'image';
-  } else if (targets.length === 1 && (obj.type === 'i-text' || obj.type === 'text')) {
-    kind = 'text';
-  } else if (anyClosed) {
-    kind = 'closedShape';
-  } else if (obj.isStampGroup || obj.type === 'line' || obj.type === 'path' || obj.isArrowGroup) {
-    kind = 'line';
-  }
-
-  let strokeColor = '#000000';
-  let strokeOpacity = 1;
-  let strokeWidth = 3;
-  let strokePattern: LinePattern = obj.strokePattern || 'solid';
-  let doubleLine = Boolean(obj.doubleLine);
-  const isSpray = targets.length === 1 && Boolean(obj.isSprayGroup);
-
-  if (isSpray) {
-    const firstDot = Array.isArray(obj._objects) ? obj._objects[0] : null;
-    const parsed = parseColorAndOpacity(firstDot?.fill, obj.strokeOpacity);
-    strokeColor = obj.strokeColorHex || parsed.hex;
-    strokeOpacity = parsed.opacity;
-    strokeWidth = 3;
-    strokePattern = 'solid';
-    doubleLine = false;
-  } else if (obj.isArrowGroup && Array.isArray(obj._objects) && obj._objects[0]) {
-    const shaft =
-      obj._objects.find((c: any) => c.isArrowShaft) || obj._objects[0];
-    const parsed = parseColorAndOpacity(shaft.stroke, obj.strokeOpacity ?? shaft.strokeOpacity);
-    strokeColor = obj.strokeColorHex || shaft.strokeColorHex || parsed.hex;
-    strokeOpacity = parsed.opacity;
-    strokeWidth = typeof shaft.strokeWidth === 'number' ? shaft.strokeWidth : 3;
-    strokePattern = obj.strokePattern || shaft.strokePattern || 'solid';
-    doubleLine = Boolean(obj.doubleLine || shaft.doubleLine);
-  } else if (obj.isStampGroup) {
-    const firstChild = Array.isArray(obj._objects) ? obj._objects[0] : obj;
-    const parsed = parseColorAndOpacity(
-      obj.stampColor ?? firstChild?.stroke,
-      obj.strokeOpacity
+  const children: any[] = [outer];
+  for (let r = 1; r < rows; r++) {
+    const y = -safeH / 2 + (safeH * r) / rows;
+    children.push(
+      new fabric.Line([-safeW / 2, y, safeW / 2, y], {
+        stroke: strokeRgba,
+        strokeWidth: Math.max(1, sw * 0.75),
+        strokeDashArray: dash || undefined,
+        strokeUniform: true,
+      })
     );
-    strokeColor = parsed.hex;
-    strokeOpacity = parsed.opacity;
-    strokeWidth =
-      typeof firstChild?.strokeWidth === 'number' ? firstChild.strokeWidth : 2;
-    strokePattern = obj.strokePattern || 'solid';
-    doubleLine = Boolean(obj.doubleLine);
-  } else if (kind === 'image') {
-    const parsed = parseColorAndOpacity(obj.stroke, obj.strokeOpacity);
-    strokeColor = obj.strokeColorHex || parsed.hex;
-    strokeOpacity = parsed.opacity;
-    strokeWidth = typeof obj.strokeWidth === 'number' ? obj.strokeWidth : 0;
-  } else {
-    const parsed = parseColorAndOpacity(obj.stroke, obj.strokeOpacity);
-    strokeColor = obj.strokeColorHex || parsed.hex;
-    strokeOpacity = parsed.opacity;
-    strokeWidth = typeof obj.strokeWidth === 'number' ? obj.strokeWidth : 3;
+  }
+  for (let c = 1; c < cols; c++) {
+    const x = -safeW / 2 + (safeW * c) / cols;
+    children.push(
+      new fabric.Line([x, -safeH / 2, x, safeH / 2], {
+        stroke: strokeRgba,
+        strokeWidth: Math.max(1, sw * 0.75),
+        strokeDashArray: dash || undefined,
+        strokeUniform: true,
+      })
+    );
   }
 
-  let fill: FillSettings = {
-    mode: 'none',
-    color: '#3B82F6',
-    opacity: 0.35,
-    hatchPattern: 'diagonal',
-  };
-
-  if (firstClosedTarget.fillMeta) {
-    fill = { ...firstClosedTarget.fillMeta };
-  } else if (
-    kind === 'closedShape' &&
-    firstClosedTarget.fill &&
-    firstClosedTarget.fill !== 'transparent'
-  ) {
-    if (typeof firstClosedTarget.fill === 'string') {
-      const parsedFill = parseColorAndOpacity(firstClosedTarget.fill);
-      fill = {
-        mode: 'solid',
-        color: parsedFill.hex,
-        opacity: parsedFill.opacity,
-        hatchPattern: 'diagonal',
-      };
-    } else {
-      fill = {
-        mode: 'pattern',
-        color: '#3B82F6',
-        opacity: 0.5,
-        hatchPattern: 'diagonal',
-      };
-    }
-  }
-
-  const singlePathOrLine =
-    targets.length === 1 &&
-    (obj.type === 'path' || obj.type === 'line') &&
-    !obj.isSprayGroup &&
-    !obj.isArrowGroup &&
-    !obj.isStampGroup;
-  const isClosedContour =
-    singlePathOrLine &&
-    obj.type === 'path' &&
-    (Boolean(obj.isClosedContour) || hasPathCloseCommand(obj));
-  const canToggleClosedContour =
-    singlePathOrLine &&
-    (isClosedContour ||
-      obj.type === 'line' ||
-      (obj.type === 'path' && Array.isArray(obj.path) && obj.path.length >= 2));
-
-  const isPolygonMorphable =
-    targets.length === 1 && obj.type === 'polygon' && !obj.isArrowObject;
-  const polygonVariant =
-    isPolygonMorphable &&
-    typeof obj.shapeSubtype === 'string' &&
-    obj.shapeSubtype !== 'triangle'
-      ? (obj.shapeSubtype as PolygonVariant)
-      : undefined;
-
-  const isRectEditable = targets.length === 1 && obj.type === 'rect';
-  const isGridRect = Boolean(isRectEditable && obj.isGridRect);
-  const gridRows = isRectEditable
-    ? Math.max(1, Math.min(24, Math.round(Number(obj.gridRows) || 3)))
-    : undefined;
-  const gridCols = isRectEditable
-    ? Math.max(1, Math.min(24, Math.round(Number(obj.gridCols) || 3)))
-    : undefined;
-
-  const isArrowMorphable =
-    targets.length === 1 && (Boolean(obj.isArrowGroup) || Boolean(obj.isArrowObject));
-  const arrowVariant: ArrowVariant | undefined = isArrowMorphable
-    ? ((obj.arrowVariant as ArrowVariant) || 'single')
-    : undefined;
-
-  const firstRoundRatio = getObjectCornerRoundRatio(obj);
-
-  return {
-    kind,
-    strokeColor,
-    strokeOpacity,
-    strokeWidth,
-    strokePattern,
-    doubleLine,
-    brushType: singlePathOrLine ? (obj.brushType || 'standard') : undefined,
-    isSpray,
-    isClosedContour: Boolean(isClosedContour),
-    canToggleClosedContour: Boolean(canToggleClosedContour),
-    isPolygonMorphable,
-    polygonVariant,
-    isRectEditable,
-    isGridRect,
-    gridRows,
-    gridCols,
-    isArrowMorphable,
-    arrowVariant,
-    selectionCount: targets.length,
-    fill,
-    opacity: typeof obj.opacity === 'number' ? obj.opacity : 1,
-    cornerRoundRatio: targets.length === 1 ? firstRoundRatio : firstRoundRatio,
-    textColor: typeof obj.fill === 'string' ? obj.fill : '#000000',
-    fontFamily: obj.fontFamily || 'Montserrat',
-    fontSize: typeof obj.fontSize === 'number' ? obj.fontSize : 36,
-    screenRect: getObjectScreenRect(activeObj),
-  };
+  const grp = new fabric.Group(children, {
+    left: left + safeW / 2,
+    top: top + safeH / 2,
+    originX: 'center',
+    originY: 'center',
+    isGridRect: true,
+    gridRows: rows,
+    gridCols: cols,
+    fillMeta: { ...fillCfg },
+    strokeColorHex: strokeCfg.color,
+    strokeOpacity: strokeCfg.opacity,
+    strokePattern: strokeCfg.pattern,
+    strokeWidth: sw,
+    doubleLine: strokeCfg.doubleLine,
+    cornerColor: '#2563EB',
+    borderColor: '#2563EB',
+  });
+  return grp;
 }
 
 export default function App() {
-  // Language state (auto-adapted to browser language + selectable in settings)
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const bgCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const canvasElRef = useRef<HTMLCanvasElement | null>(null);
+  const brushPreviewCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const fabricRef = useRef<any>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
   const [languagePref, setLanguagePref] = useState<LanguagePreference>(() =>
     getSavedLanguagePreference()
   );
-  const resolvedLang = useMemo(() => resolveLanguage(languagePref), [languagePref]);
+  const lang = useMemo(() => resolveLanguage(languagePref), [languagePref]);
   const t = useCallback(
-    (key: TranslationKey): string => translations[resolvedLang][key] || translations.en[key],
-    [resolvedLang]
+    (key: TranslationKey): string => translations[lang]?.[key] ?? translations.en[key],
+    [lang]
   );
 
-  useEffect(() => {
-    document.documentElement.lang = resolvedLang;
-  }, [resolvedLang]);
-
-  // UI state
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [isToolbarOpen, setIsToolbarOpen] = useState(true);
   const [activePopover, setActivePopover] = useState<ActivePopover>(null);
   const [activeMode, setActiveMode] = useState<DrawMode>('brush');
+  const [stroke, setStroke] = useState<StrokeSettings>(DEFAULT_STROKE);
+  const [fill, setFill] = useState<FillSettings>(DEFAULT_FILL);
   const [rectGrid, setRectGrid] = useState<RectGridConfig>({
     enabled: false,
     rows: 3,
@@ -373,2788 +288,3135 @@ export default function App() {
   });
   const [polygonVariant, setPolygonVariant] = useState<PolygonVariant>('star5');
   const [arrowVariant, setArrowVariant] = useState<ArrowVariant>('single');
-  const [bgConfig, setBgConfig] = useState<BackgroundConfig>({
-    mode: 'white',
-    fillType: 'solid',
-    color1: '#FFFFFF',
-    color2: '#DBEAFE',
-    opacity: 1,
-    gradientType: 'linear',
-    gradientAngle: 135,
-  });
-  const [canvasSize, setCanvasSize] = useState<CanvasSizeConfig>({
-    preset: 'fullscreen',
-    width: 1080,
-    height: 1080,
-  });
-  const [exportScope, setExportScope] = useState<ExportScope>('canvas');
-  const [zoomPercent, setZoomPercent] = useState(100);
-  const [isCanvasEmpty, setIsCanvasEmpty] = useState(true);
-  const [selectedInfo, setSelectedInfo] = useState<SelectedObjectInfo | null>(null);
-  const [objectEditorOpen, setObjectEditorOpen] = useState(false);
-  const [isEditingBezier, setIsEditingBezier] = useState(false);
-  const [isEditingContour, setIsEditingContour] = useState(false);
   const [closedContour, setClosedContour] = useState(false);
   const [snapEnabled, setSnapEnabled] = useState(true);
-  const [isSpacePanning, setIsSpacePanning] = useState(false);
-  const [cornerRoundHud, setCornerRoundHud] = useState<{
-    percent: number;
-    armed: boolean;
-  } | null>(null);
-  const [rotatingAngleHud, setRotatingAngleHud] = useState<{
-    deg: number;
-    isSnapped: boolean;
-    isCardinal: boolean;
-  } | null>(null);
+  const [eraserSize, setEraserSize] = useState(24);
+
+  const [bgConfig, setBgConfig] = useState<BackgroundConfig>(DEFAULT_BG);
+  const [canvasSize, setCanvasSize] = useState<CanvasSizeConfig>(() => ({
+    preset: 'fullscreen',
+    width: typeof window !== 'undefined' ? window.innerWidth : 1280,
+    height: typeof window !== 'undefined' ? window.innerHeight : 720,
+  }));
+  const [exportScope, setExportScope] = useState<ExportScope>('canvas');
+  const [zoomPercent, setZoomPercent] = useState(100);
+  const [hasArtwork, setHasArtwork] = useState(false);
+
+  const [selectedInfo, setSelectedInfo] = useState<SelectedObjectInfo | null>(null);
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
+  const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
   const [dontShowTutorialAgain, setDontShowTutorialAgain] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false;
     try {
-      return window.localStorage.getItem(HIDE_TUTORIAL_STORAGE_KEY) === '1';
+      return localStorage.getItem(HIDE_TUTORIAL_STORAGE_KEY) === 'true';
     } catch {
       return false;
     }
   });
   const [helpOpen, setHelpOpen] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false;
     try {
-      return window.localStorage.getItem(HIDE_TUTORIAL_STORAGE_KEY) !== '1';
+      return localStorage.getItem(HIDE_TUTORIAL_STORAGE_KEY) !== 'true';
     } catch {
-      return true;
+      return false;
     }
   });
-  const [helpInitialFullscreen, setHelpInitialFullscreen] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false;
-    try {
-      return window.localStorage.getItem(HIDE_TUTORIAL_STORAGE_KEY) !== '1';
-    } catch {
-      return true;
-    }
-  });
-  const [offlineToast, setOfflineToast] = useState(false);
-  const offlineToastTimerRef = useRef<number | null>(null);
-  const offlineHtmlBlobRef = useRef<Blob | null>(null);
-  const [selectAllToast, setSelectAllToast] = useState(false);
-  const selectAllToastTimerRef = useRef<number | null>(null);
-  const [pastedToast, setPastedToast] = useState(false);
-  const pastedToastTimerRef = useRef<number | null>(null);
-  const [pasteErrorKind, setPasteErrorKind] = useState<'empty' | 'blocked' | null>(null);
-  const pasteErrorToastTimerRef = useRef<number | null>(null);
-  const [canvasPasteMenu, setCanvasPasteMenu] = useState<{
-    clientX: number;
-    clientY: number;
-    worldX: number;
-    worldY: number;
-    waitingNativePaste?: boolean;
-  } | null>(null);
-  const pasteCatcherRef = useRef<HTMLDivElement | null>(null);
-  const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
-  const [bottomDeletePressing, setBottomDeletePressing] = useState(false);
 
-  // Brush / Shape / Eraser settings
-  const [stroke, setStroke] = useState<StrokeSettings>({
-    color: '#000000',
-    opacity: 1,
-    width: 3,
-    pattern: 'solid',
-    brushType: 'standard',
-    doubleLine: false,
-  });
-  const [fill, setFill] = useState<FillSettings>({
-    mode: 'none',
-    color: '#3B82F6',
-    opacity: 0.35,
-    hatchPattern: 'diagonal',
-  });
-  const [eraserSize, setEraserSize] = useState(24);
+  // Cloud profile & saved project state
+  const [cloudUser, setCloudUser] = useState<User | null>(() => auth.currentUser);
+  const [cloudModalOpen, setCloudModalOpen] = useState(false);
+  const [activeCloudProjectId, setActiveCloudProjectId] = useState<string | null>(null);
+  const [activeCloudProjectTitle, setActiveCloudProjectTitle] = useState<string>('');
+  const lastRightClickOpenAtRef = useRef<number>(0);
 
-  // History state
-  const [canUndo, setCanUndo] = useState(false);
-  const [canRedo, setCanRedo] = useState(false);
+  // Contour polyline points & corner radius HUD state
+  const [contourPoints, setContourPoints] = useState<Point2D[]>([]);
+  const [cornerRoundHudRatio, setCornerRoundHudRatio] = useState<number | null>(null);
 
-  // Refs for Fabric & background canvas
-  const bgCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const fabricElRef = useRef<HTMLCanvasElement | null>(null);
-  const fabricCanvasRef = useRef<any>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-
-  // Mutable refs for event handlers
-  const activeModeRef = useRef<DrawMode>(activeMode);
-  const rectGridRef = useRef<RectGridConfig>(rectGrid);
-  const polygonVariantRef = useRef<PolygonVariant>(polygonVariant);
-  const arrowVariantRef = useRef<ArrowVariant>(arrowVariant);
-  const closedContourRef = useRef<boolean>(closedContour);
-  const snapEnabledRef = useRef<boolean>(snapEnabled);
-  const strokeRef = useRef<StrokeSettings>(stroke);
-  const fillRef = useRef<FillSettings>(fill);
-  const eraserSizeRef = useRef<number>(eraserSize);
-  const bgConfigRef = useRef<BackgroundConfig>(bgConfig);
-  const canvasSizeRef = useRef<CanvasSizeConfig>(canvasSize);
-  const artboardCenterRef = useRef<{ x: number; y: number }>({
-    x: typeof window !== 'undefined' ? window.innerWidth / 2 : 512,
-    y: typeof window !== 'undefined' ? window.innerHeight / 2 : 384,
-  });
-  const sidebarOpenRef = useRef<boolean>(sidebarOpen);
-  const activePopoverRef = useRef<ActivePopover>(activePopover);
+  // Refs synced with latest state for Fabric callbacks
+  const activeModeRef = useRef(activeMode);
+  const strokeRef = useRef(stroke);
+  const fillRef = useRef(fill);
+  const rectGridRef = useRef(rectGrid);
+  const polygonVariantRef = useRef(polygonVariant);
+  const arrowVariantRef = useRef(arrowVariant);
+  const closedContourRef = useRef(closedContour);
+  const snapEnabledRef = useRef(snapEnabled);
+  const eraserSizeRef = useRef(eraserSize);
+  const bgConfigRef = useRef(bgConfig);
+  const canvasSizeRef = useRef(canvasSize);
+  const activePopoverRef = useRef(activePopover);
+  const cloudUserRef = useRef<User | null>(cloudUser);
+  const exportScopeRef = useRef<ExportScope>(exportScope);
+  const activeCloudProjectIdRef = useRef<string | null>(activeCloudProjectId);
+  const activeCloudProjectTitleRef = useRef<string>(activeCloudProjectTitle);
 
   activeModeRef.current = activeMode;
+  strokeRef.current = stroke;
+  fillRef.current = fill;
   rectGridRef.current = rectGrid;
   polygonVariantRef.current = polygonVariant;
   arrowVariantRef.current = arrowVariant;
   closedContourRef.current = closedContour;
   snapEnabledRef.current = snapEnabled;
-  strokeRef.current = stroke;
-  fillRef.current = fill;
   eraserSizeRef.current = eraserSize;
   bgConfigRef.current = bgConfig;
   canvasSizeRef.current = canvasSize;
-  sidebarOpenRef.current = sidebarOpen;
   activePopoverRef.current = activePopover;
+  cloudUserRef.current = cloudUser;
+  exportScopeRef.current = exportScope;
+  activeCloudProjectIdRef.current = activeCloudProjectId;
+  activeCloudProjectTitleRef.current = activeCloudProjectTitle;
 
-  // History refs
+  // Cloud auto-draft persistence refs
+  const isDirtyDraftRef = useRef(false);
+  const draftSaveTimerRef = useRef<number | null>(null);
+  const draftLoadedForUidRef = useRef<string | null>(null);
+
+  // Undo/Redo history refs
   const historyRef = useRef<string[]>([]);
   const historyIndexRef = useRef<number>(-1);
-  const isRestoringRef = useRef<boolean>(false);
-  const historyDebounceRef = useRef<number | null>(null);
+  const isRestoringHistoryRef = useRef(false);
 
-  // Shape drawing refs
-  const isDrawingShapeRef = useRef(false);
-  const shapeStartRef = useRef<Point>({ x: 0, y: 0 });
-  const tempShapeRef = useRef<any>(null);
+  // Interactive drawing refs
+  const drawingShapeRef = useRef<{
+    obj: any;
+    startX: number;
+    startY: number;
+  } | null>(null);
+  const contourPointsRef = useRef<Point2D[]>([]);
+  contourPointsRef.current = contourPoints;
+  const polylineHoverPtRef = useRef<Point2D | null>(null);
 
-  // Bezier & Contour & Endpoint Snap refs
-  const bezierSessionRef = useRef<BezierSession | null>(null);
-  const contourSessionRef = useRef<{
-    points: Point[];
+  const bezierEditRef = useRef<{
     pathObj: any;
-    previewLine: any;
-    startMarker: any;
-  } | null>(null);
-  const snapIndicatorRef = useRef<Point | null>(null);
-  const pendingLineStartSnapRef = useRef<EndpointSnapMatch | null>(null);
-  const pendingLineEndSnapRef = useRef<EndpointSnapMatch | null>(null);
-  const pendingEndpointMergeRef = useRef<{
-    obj: any;
-    end: 'start' | 'end';
-    snap: EndpointSnapMatch;
+    p1: Point2D;
+    cp1: Point2D;
+    cp2: Point2D;
+    p2: Point2D;
+    draggingHandle: 'p1' | 'cp1' | 'cp2' | 'p2' | null;
   } | null>(null);
 
-  // Native long-press corner rounding refs
-  const longPressCornerTimerRef = useRef<number | null>(null);
-  const pendingCornerPressRef = useRef<{
-    obj: any;
-    startPt: Point;
-    dirX: number;
-    dirY: number;
-    maxTravel: number;
-    preLeft: number;
-    preTop: number;
-    preScaleX: number;
-    preScaleY: number;
-  } | null>(null);
-  const cornerRoundingDragRef = useRef<{
-    obj: any;
-    startPt: Point;
-    dirX: number;
-    dirY: number;
-    maxTravel: number;
-    startRatio: number;
-    movedPx: number;
-  } | null>(null);
-  const cornerRoundingArmedObjRef = useRef<any>(null);
-
-  // Panning & Pinching refs
-  const isSpaceHeldRef = useRef(false);
-  const isPanningDragRef = useRef(false);
-  const lastPanClientRef = useRef<Point>({ x: 0, y: 0 });
-  const isPinchingRef = useRef(false);
-  const lastSingleTouchRef = useRef<{ time: number; count: number }>({
-    time: 0,
-    count: 0,
-  });
-
-  // Freehand Marching-Ants Lasso & Clipboard & Bottom Delete Long-Press refs
-  const isDrawingLassoRef = useRef(false);
   const lassoPointsRef = useRef<LassoPoint[]>([]);
-  const lassoRafRef = useRef<number | null>(null);
-  const internalClipboardTokenRef = useRef<string | null>(null);
-  const internalClipboardPlainRef = useRef<string | null>(null);
-  const internalClipboardObjRef = useRef<any>(null);
-  const pasteOffsetCountRef = useRef<number>(0);
-  const emptyLongPressTimerRef = useRef<number | null>(null);
-  const emptyLongPressStartRef = useRef<{ clientX: number; clientY: number } | null>(null);
-  const emptyLongPressTriggeredRef = useRef<boolean>(false);
-  const canvasPasteMenuOpenRef = useRef<boolean>(false);
-  const bottomDeleteLongPressTimerRef = useRef<number | null>(null);
-  const bottomDeleteLongPressedRef = useRef(false);
-  const bottomDeletePressStartRef = useRef<{ x: number; y: number } | null>(null);
+  const isDrawingLassoRef = useRef(false);
+  const snapIndicatorRef = useRef<Point2D | null>(null);
+  const rotatingAngleHudRef = useRef<{
+    angle: number;
+    screenX: number;
+    screenY: number;
+    snapped: boolean;
+  } | null>(null);
 
-  canvasPasteMenuOpenRef.current = Boolean(canvasPasteMenu);
+  // Long-press corner-rounding & tap-to-select green vertex editing refs
+  const selectedVertexRef = useRef<{
+    obj: any;
+    index: number;
+  } | null>(null);
+  const vertexPendingRef = useRef<{
+    obj: any;
+    index: number;
+    pointerId: number;
+    startScreenX: number;
+    startScreenY: number;
+    wasAlreadySelected: boolean;
+    isOpenLineEnd: boolean;
+    prevLocks: {
+      prevLockX: boolean;
+      prevLockY: boolean;
+      prevLockScaleX: boolean;
+      prevLockScaleY: boolean;
+      prevLockRot: boolean;
+      prevHasControls: boolean;
+    } | null;
+  } | null>(null);
+  const vertexDragRef = useRef<{
+    obj: any;
+    index: number;
+    pointerId: number;
+    isOpenLineEnd: boolean;
+    prevLocks: {
+      prevLockX: boolean;
+      prevLockY: boolean;
+      prevLockScaleX: boolean;
+      prevLockScaleY: boolean;
+      prevLockRot: boolean;
+      prevHasControls: boolean;
+    };
+  } | null>(null);
+  const bezierHandleDragRef = useRef<{
+    obj: any;
+    segIndex: number;
+    handle: 'cp1' | 'cp2';
+    pointerId: number;
+    prevLocks: {
+      prevLockX: boolean;
+      prevLockY: boolean;
+      prevLockScaleX: boolean;
+      prevLockScaleY: boolean;
+      prevLockRot: boolean;
+      prevHasControls: boolean;
+    };
+  } | null>(null);
+  const cornerLongPressTimerRef = useRef<number | null>(null);
+  const cornerPendingRef = useRef<{
+    obj: any;
+    pointerId: number;
+    startScreenX: number;
+    startScreenY: number;
+    centerScreen: Point2D;
+    startDist: number;
+    startRatio: number;
+    prevLocks: {
+      prevLockX: boolean;
+      prevLockY: boolean;
+      prevLockScaleX: boolean;
+      prevLockScaleY: boolean;
+      prevLockRot: boolean;
+      prevHasControls: boolean;
+    } | null;
+  } | null>(null);
+  const cornerRoundDragRef = useRef<{
+    obj: any;
+    pointerId: number;
+    centerScreen: Point2D;
+    startDist: number;
+    startRatio: number;
+    prevLockX: boolean;
+    prevLockY: boolean;
+    prevLockScaleX: boolean;
+    prevLockScaleY: boolean;
+    prevLockRot: boolean;
+    prevHasControls: boolean;
+  } | null>(null);
 
-  const refreshEmptyState = useCallback(() => {
-    const fc = fabricCanvasRef.current;
-    if (!fc) return;
-    const realObjects = fc.getObjects().filter((o: any) => !o.excludeFromExport);
-    setIsCanvasEmpty(realObjects.length === 0);
+  // Textured Brush active stroke refs
+  const brushBufferRef = useRef<HTMLCanvasElement | null>(null);
+  const brushSessionRef = useRef<{
+    session: StrokeSession;
+    pointerId: number;
+    dpr: number;
+    vpt: number[];
+    pointerType: string;
+    startWorld: Point2D;
+    lastWorld: Point2D;
+  } | null>(null);
+
+  // Clipboard internal object clone ref
+  const clipboardJsonRef = useRef<any[] | null>(null);
+
+  // Spacebar / pan / pinch refs
+  const spacePressedRef = useRef(false);
+  const isPanningRef = useRef(false);
+  const panLastScreenRef = useRef<{ x: number; y: number } | null>(null);
+  const touchPinchRef = useRef<{
+    active: boolean;
+    dist: number;
+    midX: number;
+    midY: number;
+  } | null>(null);
+  const activeTouchesRef = useRef<Map<number, { x: number; y: number }>>(new Map());
+
+  const toastTimerRef = useRef<number | null>(null);
+  const showToast = useCallback((msg: string) => {
+    setToastMessage(msg);
+    if (toastTimerRef.current !== null) {
+      window.clearTimeout(toastTimerRef.current);
+    }
+    toastTimerRef.current = window.setTimeout(() => {
+      setToastMessage(null);
+      toastTimerRef.current = null;
+    }, 2400);
   }, []);
 
-  const refreshSelectedInfo = useCallback(() => {
-    const fc = fabricCanvasRef.current;
-    if (!fc || bezierSessionRef.current || contourSessionRef.current) {
-      setSelectedInfo(null);
-      return;
-    }
-    const active = fc.getActiveObject();
-    if (!active || active.excludeFromExport) {
-      setSelectedInfo(null);
-      setObjectEditorOpen(false);
-      return;
-    }
-    setSelectedInfo(extractObjectInfo(active));
-  }, []);
+  const isDarkBg = useMemo(() => isBackgroundDark(bgConfig), [bgConfig]);
 
-  // Render background layer (White / Grid / Lined / Dark)
-  const renderBackground = useCallback(() => {
+  const redrawBackground = useCallback(() => {
     const bgCanvas = bgCanvasRef.current;
-    const fc = fabricCanvasRef.current;
+    const fc = fabricRef.current;
     if (!bgCanvas) return;
-
-    const dpr = window.devicePixelRatio || 1;
-    const width = window.innerWidth;
-    const height = window.innerHeight;
-
-    if (
-      bgCanvas.width !== Math.round(width * dpr) ||
-      bgCanvas.height !== Math.round(height * dpr)
-    ) {
-      bgCanvas.width = Math.round(width * dpr);
-      bgCanvas.height = Math.round(height * dpr);
-      bgCanvas.style.width = `${width}px`;
-      bgCanvas.style.height = `${height}px`;
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    if (bgCanvas.width !== Math.round(w * dpr) || bgCanvas.height !== Math.round(h * dpr)) {
+      bgCanvas.width = Math.round(w * dpr);
+      bgCanvas.height = Math.round(h * dpr);
     }
-
     const ctx = bgCanvas.getContext('2d');
     if (!ctx) return;
-
     ctx.save();
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    const vpt = fc ? fc.viewportTransform || [1, 0, 0, 1, 0, 0] : [1, 0, 0, 1, 0, 0];
+    const vpt = fc?.viewportTransform || [1, 0, 0, 1, 0, 0];
     drawBackgroundToContext(
       ctx,
       bgConfigRef.current,
       vpt,
-      width,
-      height,
+      w,
+      h,
       false,
       canvasSizeRef.current,
-      artboardCenterRef.current
+      ARTBOARD_CENTER
     );
     ctx.restore();
   }, []);
 
-  // Push JSON snapshot to 30-step Undo/Redo stack
-  const saveHistory = useCallback(() => {
-    const fc = fabricCanvasRef.current;
-    if (!fc || isRestoringRef.current) return;
+  const syncHasArtwork = useCallback(() => {
+    const fc = fabricRef.current;
+    if (!fc) return;
+    const objs = fc
+      .getObjects()
+      .filter((o: any) => !o.excludeFromExport && !o.isEraserPath);
+    setHasArtwork(objs.length > 0);
+  }, []);
 
-    const jsonObj = fc.toJSON(CUSTOM_JSON_PROPS);
-    if (Array.isArray(jsonObj.objects)) {
-      jsonObj.objects = jsonObj.objects.filter((o: any) => !o.excludeFromExport);
+  const getLocalDraftKey = (uid: string) => `zp_local_draft_${uid}`;
+
+  const clearLocalDraftBackup = useCallback((uid?: string | null) => {
+    if (!uid) return;
+    try {
+      localStorage.removeItem(getLocalDraftKey(uid));
+    } catch {
+      // ignore storage errors
     }
-    const serialized = JSON.stringify(jsonObj);
+  }, []);
 
-    const current = historyRef.current[historyIndexRef.current];
-    if (current === serialized) return;
-
-    const sliced = historyRef.current.slice(0, historyIndexRef.current + 1);
-    sliced.push(serialized);
-    if (sliced.length > MAX_HISTORY) {
-      sliced.shift();
+  const flushCloudDraftNow = useCallback(() => {
+    const fc = fabricRef.current;
+    const user = cloudUserRef.current;
+    if (!fc || !user || !isDirtyDraftRef.current) return;
+    if (draftSaveTimerRef.current !== null) {
+      window.clearTimeout(draftSaveTimerRef.current);
+      draftSaveTimerRef.current = null;
     }
 
-    historyRef.current = sliced;
-    historyIndexRef.current = sliced.length - 1;
-    setCanUndo(historyIndexRef.current > 0);
-    setCanRedo(false);
-    refreshEmptyState();
-  }, [refreshEmptyState]);
+    const activeObjs = fc
+      .getObjects()
+      .filter((o: any) => !o.excludeFromExport && !o.isEraserPath);
 
-  const scheduleHistorySave = useCallback(() => {
-    if (historyDebounceRef.current) {
-      window.clearTimeout(historyDebounceRef.current);
-    }
-    historyDebounceRef.current = window.setTimeout(() => {
-      historyDebounceRef.current = null;
-      saveHistory();
-    }, 280);
-  }, [saveHistory]);
-
-  // Apply Fabric mode & brush settings whenever mode/stroke/eraser/spacePan changes
-  const syncFabricToolState = useCallback(() => {
-    const fc = fabricCanvasRef.current;
-    const fabric = getFabric();
-    if (!fc || !fabric) return;
-
-    const mode = activeModeRef.current;
-
-    if (isSpaceHeldRef.current) {
-      fc.isDrawingMode = false;
-      fc.selection = false;
-      fc.defaultCursor = 'grab';
-      fc.forEachObject((obj: any) => {
-        if (!obj.excludeFromExport) {
-          obj.selectable = false;
-          obj.evented = false;
-        }
-      });
-      fc.requestRenderAll();
+    if (activeObjs.length === 0) {
+      isDirtyDraftRef.current = false;
+      clearLocalDraftBackup(user.uid);
+      void clearCloudDraft(user.uid);
       return;
     }
 
-    if (mode === 'brush') {
-      fc.discardActiveObject();
-      fc.isDrawingMode = true;
-      fc.selection = false;
-      fc.defaultCursor = 'crosshair';
-
-      const brushType = strokeRef.current.brushType;
-      const effectiveStroke = applyColorOpacity(
-        strokeRef.current.color,
-        strokeRef.current.opacity
-      );
-      if (brushType === 'spray') {
-        const spray = new fabric.SprayBrush(fc);
-        spray.color = effectiveStroke;
-        spray.width = Math.max(18, strokeRef.current.width * 3.8);
-        spray.density = Math.max(22, Math.round(strokeRef.current.width * 2.8 + 14));
-        spray.dotWidth = Math.max(1.5, Math.min(8, strokeRef.current.width * 0.28 + 1));
-        spray.dotWidthVariance = Math.max(1, strokeRef.current.width * 0.22);
-        spray.randomOpacity = true;
-        spray.optimizeOverlapping = true;
-        fc.freeDrawingBrush = spray;
-      } else {
-        const brush = new fabric.PencilBrush(fc);
-        const previewWidth = strokeRef.current.width > 0 ? strokeRef.current.width : 2;
-        const previewColor =
-          strokeRef.current.width > 0
-            ? effectiveStroke
-            : isBackgroundDark(bgConfigRef.current)
-              ? 'rgba(255, 255, 255, 0.5)'
-              : 'rgba(59, 130, 246, 0.55)';
-        brush.color = previewColor;
-        brush.width = previewWidth;
-        brush.strokeLineCap = 'round';
-        brush.strokeLineJoin = 'round';
-        brush.strokeDashArray = getScaledDashArray(
-          strokeRef.current.pattern,
-          previewWidth
-        );
-        if (brushType === 'soft' && strokeRef.current.width > 0) {
-          brush.shadow = new fabric.Shadow({
-            blur: Math.max(8, strokeRef.current.width * 1.45),
-            color: effectiveStroke,
-            affectStroke: true,
-            offsetX: 0,
-            offsetY: 0,
-          });
-        }
-        fc.freeDrawingBrush = brush;
+    try {
+      const serialized = fc.toObject(CUSTOM_FABRIC_PROPS) as Record<string, unknown>;
+      const draftPayload = {
+        exportScope: exportScopeRef.current,
+        canvasSize: canvasSizeRef.current,
+        bgConfig: bgConfigRef.current,
+        canvasData: serialized,
+        activeProjectId: activeCloudProjectIdRef.current || '',
+        activeProjectTitle: activeCloudProjectTitleRef.current || '',
+        updatedAtMs: Date.now(),
+      };
+      try {
+        localStorage.setItem(getLocalDraftKey(user.uid), JSON.stringify(draftPayload));
+      } catch {
+        // ignore quota errors on large local backup
       }
-
-      fc.forEachObject((obj: any) => {
-        if (!obj.excludeFromExport) {
-          obj.selectable = false;
-          obj.evented = false;
-        }
+      void saveCloudDraft(user, draftPayload).catch(() => {
+        // ignore background network errors while auto-saving draft
       });
-    } else if (mode === 'eraser') {
-      fc.discardActiveObject();
-      fc.isDrawingMode = true;
-      fc.selection = false;
-      fc.defaultCursor = 'crosshair';
-      const brush = new fabric.PencilBrush(fc);
-      brush.width = eraserSizeRef.current;
-      brush.color = isBackgroundDark(bgConfigRef.current)
-        ? 'rgba(255, 255, 255, 0.28)'
-        : 'rgba(15, 23, 42, 0.18)';
-      brush.strokeLineCap = 'round';
-      brush.strokeLineJoin = 'round';
-      brush.strokeDashArray = null;
-      fc.freeDrawingBrush = brush;
-      fc.forEachObject((obj: any) => {
-        if (!obj.excludeFromExport) {
-          obj.selectable = false;
-          obj.evented = false;
-        }
-      });
-    } else if (mode === 'select') {
-      fc.isDrawingMode = false;
-      fc.selection = true;
-      fc.defaultCursor = 'default';
-      fc.forEachObject((obj: any) => {
-        if (!obj.excludeFromExport) {
-          const isEraser = Boolean(obj.isEraserPath);
-          obj.selectable = !isEraser;
-          obj.evented = !isEraser;
-        }
-      });
-    } else if (mode === 'lasso') {
-      fc.discardActiveObject();
-      fc.isDrawingMode = false;
-      fc.selection = false;
-      fc.defaultCursor = 'crosshair';
-      fc.forEachObject((obj: any) => {
-        if (!obj.excludeFromExport) {
-          obj.selectable = false;
-          obj.evented = false;
-        }
-      });
-    } else {
-      // Shape or line or bezier creation mode
-      fc.discardActiveObject();
-      fc.isDrawingMode = false;
-      fc.selection = false;
-      fc.defaultCursor = 'crosshair';
-      fc.forEachObject((obj: any) => {
-        if (!obj.excludeFromExport) {
-          obj.selectable = false;
-          obj.evented = false;
-        }
-      });
+    } catch {
+      // ignore serialization errors
     }
+  }, [clearLocalDraftBackup]);
 
-    fc.requestRenderAll();
-  }, []);
+  const scheduleCloudDraftSave = useCallback(() => {
+    isDirtyDraftRef.current = true;
+    const user = cloudUserRef.current;
+    if (!user) return;
+    if (draftSaveTimerRef.current !== null) {
+      window.clearTimeout(draftSaveTimerRef.current);
+    }
+    draftSaveTimerRef.current = window.setTimeout(() => {
+      draftSaveTimerRef.current = null;
+      flushCloudDraftNow();
+    }, 2200);
+  }, [flushCloudDraftNow]);
 
-  const attachControlsToObject = useCallback(
-    (obj: any) => {
-      if (!obj) return;
-      if (!isMergeableOpenLine(obj)) {
-        detachEndpointControls(obj);
+  const pushHistory = useCallback(() => {
+    const fc = fabricRef.current;
+    if (!fc || isRestoringHistoryRef.current) return;
+    try {
+      const json = JSON.stringify(fc.toObject(CUSTOM_FABRIC_PROPS));
+      const stack = historyRef.current.slice(0, historyIndexRef.current + 1);
+      if (stack.length > 0 && stack[stack.length - 1] === json) {
         return;
       }
-      attachEndpointControls(obj, {
-        onDragEndpoint: (target, endKey, worldX, worldY) => {
-          const fc = fabricCanvasRef.current;
-          if (!fc || !target) return false;
+      stack.push(json);
+      if (stack.length > 50) {
+        stack.shift();
+      }
+      historyRef.current = stack;
+      historyIndexRef.current = stack.length - 1;
+      setCanUndo(historyIndexRef.current > 0);
+      setCanRedo(false);
+      syncHasArtwork();
+      if (historyIndexRef.current > 0) {
+        scheduleCloudDraftSave();
+      }
+    } catch {
+      // ignore serialization edge cases
+    }
+  }, [scheduleCloudDraftSave, syncHasArtwork]);
+
+  const extractSelectedObjectInfo = useCallback((): SelectedObjectInfo | null => {
+    const fc = fabricRef.current;
+    if (!fc) return null;
+    const active = fc.getActiveObject();
+    if (!active) return null;
+
+    const isMulti = active.type === 'activeSelection';
+    const primary = isMulti && Array.isArray(active._objects) ? active._objects[0] : active;
+    if (!primary) return null;
+
+    const screenRect = getObjectScreenRect(active);
+    const opacity = typeof active.opacity === 'number' ? active.opacity : 1;
+
+    if (primary.type === 'i-text' || primary.type === 'text' || primary.type === 'textbox') {
+      const parsed = parseColorAndOpacity(primary.fill);
+      return {
+        kind: 'text',
+        strokeColor: parsed.hex,
+        strokeOpacity: parsed.opacity,
+        strokeWidth: 0,
+        strokePattern: 'solid',
+        doubleLine: false,
+        selectionCount: isMulti ? active._objects.length : 1,
+        fill: DEFAULT_FILL,
+        opacity,
+        cornerRoundRatio: null,
+        textColor: parsed.hex,
+        fontFamily: primary.fontFamily || 'Montserrat',
+        fontSize: primary.fontSize || 36,
+        screenRect,
+      };
+    }
+
+    if (primary.type === 'image') {
+      if (primary.isTexturedBrushStroke) {
+        return {
+          kind: 'line',
+          strokeColor: primary.strokeColorHex || '#0F172A',
+          strokeOpacity: primary.strokeOpacity ?? opacity,
+          strokeWidth: primary.strokeWidth || 6,
+          strokePattern: 'solid',
+          doubleLine: false,
+          brushType: primary.brushType,
+          isSpray: true,
+          selectionCount: isMulti ? active._objects.length : 1,
+          fill: DEFAULT_FILL,
+          opacity,
+          cornerRoundRatio: null,
+          textColor: '#000000',
+          fontFamily: 'Montserrat',
+          fontSize: 36,
+          screenRect,
+        };
+      }
+      const parsed = parseColorAndOpacity(primary.stroke, primary.strokeOpacity);
+      return {
+        kind: 'image',
+        strokeColor: primary.strokeColorHex || parsed.hex,
+        strokeOpacity: primary.strokeOpacity ?? parsed.opacity,
+        strokeWidth: primary.strokeWidth || 0,
+        strokePattern: primary.strokePattern || 'solid',
+        doubleLine: Boolean(primary.doubleLine),
+        brushType: primary.brushType,
+        selectionCount: isMulti ? active._objects.length : 1,
+        fill: DEFAULT_FILL,
+        opacity,
+        cornerRoundRatio: null,
+        textColor: '#000000',
+        fontFamily: 'Montserrat',
+        fontSize: 36,
+        screenRect,
+      };
+    }
+
+    const parsedStroke = parseColorAndOpacity(primary.stroke, primary.strokeOpacity);
+    const isClosedPath =
+      primary.type === 'path' &&
+      (Boolean(primary.isClosedContour) || hasPathCloseCommand(primary));
+    const isFilledArrow =
+      Boolean(primary.isArrowMorphable || primary.isArrowObject) &&
+      (primary.arrowVariant === 'filled' || primary.arrowVariant === 'filledDouble');
+    const isClosed =
+      primary.type === 'ellipse' ||
+      primary.type === 'rect' ||
+      primary.type === 'triangle' ||
+      primary.type === 'polygon' ||
+      Boolean(primary.isGridRect) ||
+      Boolean(primary.isStampGroup && hasFillableStampParts(primary)) ||
+      isClosedPath ||
+      isFilledArrow;
+
+    const kind: SelectedObjectKind = isClosed ? 'closedShape' : 'line';
+
+    const canToggleClosedContour =
+      !isMulti &&
+      !primary.isArrowGroup &&
+      !primary.isArrowObject &&
+      !primary.isStampGroup &&
+      !primary.isSprayGroup &&
+      !primary.isGridRect &&
+      (primary.type === 'line' ||
+        (primary.type === 'path' &&
+          !primary.isEraserPath &&
+          Array.isArray(primary.path) &&
+          primary.path.length >= 2));
+
+    const fillMeta: FillSettings = primary.fillMeta
+      ? { ...primary.fillMeta }
+      : { ...DEFAULT_FILL };
+
+    return {
+      kind,
+      strokeColor: primary.strokeColorHex || parsedStroke.hex,
+      strokeOpacity: primary.strokeOpacity ?? parsedStroke.opacity,
+      strokeWidth:
+        typeof primary.strokeWidth === 'number' ? primary.strokeWidth : strokeRef.current.width,
+      strokePattern: primary.strokePattern || 'solid',
+      doubleLine: Boolean(primary.doubleLine),
+      brushType: primary.brushType,
+      isSpray: Boolean(primary.isSprayGroup || primary.brushType === 'spray'),
+      isClosedContour: Boolean(primary.isClosedContour || isClosedPath),
+      canToggleClosedContour,
+      isPolygonMorphable: Boolean(primary.isPolygonMorphable && primary.polygonVariant),
+      polygonVariant: primary.polygonVariant,
+      isRectEditable: primary.type === 'rect' || Boolean(primary.isGridRect),
+      isGridRect: Boolean(primary.isGridRect),
+      gridRows: primary.gridRows ?? 3,
+      gridCols: primary.gridCols ?? 3,
+      isArrowMorphable: Boolean(primary.isArrowMorphable || primary.isArrowObject || primary.isArrowGroup),
+      arrowVariant: primary.arrowVariant,
+      selectionCount: isMulti ? active._objects.length : 1,
+      fill: fillMeta,
+      opacity,
+      cornerRoundRatio: isMulti ? null : getObjectCornerRoundRatio(primary),
+      textColor: '#000000',
+      fontFamily: 'Montserrat',
+      fontSize: 36,
+      screenRect,
+    };
+  }, []);
+
+  const refreshSelectionInfo = useCallback(() => {
+    setSelectedInfo(extractSelectedObjectInfo());
+  }, [extractSelectedObjectInfo]);
+
+  const applyEndpointControlsToSelection = useCallback(() => {
+    const fc = fabricRef.current;
+    if (!fc) return;
+    const active = fc.getActiveObject();
+    if (!active || active.type === 'activeSelection') return;
+    if (snapEnabledRef.current && isMergeableOpenLine(active)) {
+      attachEndpointControls(active, {
+        onDragEndpoint: (obj, end, worldX, worldY) => {
           const zoom = fc.getZoom() || 1;
-          const eps = getObjectWorldEndpoints(target);
-          const isMultiOrCurved =
-            target.type === 'path' &&
-            Array.isArray(target.path) &&
-            (target.path.length >= 3 ||
-              target.path.some((c: any) => c[0] === 'C' || c[0] === 'Q'));
-          const extraSelf = isMultiOrCurved
-            ? endKey === 'start'
-              ? eps?.end
-              : eps?.start
-            : null;
-          const snap = snapEnabledRef.current
-            ? findNearestEndpointSnap(
-                fc,
-                { x: worldX, y: worldY },
-                [target],
-                zoom,
-                extraSelf
-              )
-            : null;
-          const nextPt = snap ? snap.point : { x: worldX, y: worldY };
-          snapIndicatorRef.current = snap ? snap.point : null;
-          pendingEndpointMergeRef.current = snap
-            ? { obj: target, end: endKey, snap }
-            : null;
-          updateOpenObjectEndpoint(target, endKey, nextPt);
-          refreshSelectedInfo();
+          const curEps = getObjectWorldEndpoints(obj);
+          const segCount =
+            obj.type === 'path' ? extractWorldPathSegmentsForEdit(obj).length : 1;
+          const selfOtherEnd =
+            curEps && segCount >= 2
+              ? end === 'start'
+                ? curEps.end
+                : curEps.start
+              : null;
+          const match = findNearestEndpointSnap(
+            fc,
+            { x: worldX, y: worldY },
+            [obj],
+            zoom,
+            selfOtherEnd,
+            true
+          );
+          const targetPt = match ? match.point : { x: worldX, y: worldY };
+          snapIndicatorRef.current = match ? match.point : null;
+          updateOpenObjectEndpoint(obj, end, targetPt);
+          fc.requestRenderAll();
           return true;
         },
       });
-    },
-    [refreshSelectedInfo]
-  );
+    } else {
+      detachEndpointControls(active);
+    }
+  }, []);
 
-  // Finalize or cancel active multi-segment Closed Contour session
-  const finalizeContourSession = useCallback(
-    (cancel = false) => {
-      const fc = fabricCanvasRef.current;
-      const session = contourSessionRef.current;
-      if (!fc || !session) return;
-
-      if (session.previewLine) fc.remove(session.previewLine);
-      if (session.startMarker) fc.remove(session.startMarker);
-      if (session.pathObj) fc.remove(session.pathObj);
-      snapIndicatorRef.current = null;
-      contourSessionRef.current = null;
-      setIsEditingContour(false);
-
-      if (!cancel && session.points.length >= 2) {
-        const pts = session.points;
-        const segs = [];
-        for (let i = 0; i < pts.length - 1; i++) {
-          segs.push({ type: 'L' as const, from: pts[i], to: pts[i + 1] });
-        }
-        const isClosed = pts.length >= 3;
-        const finalWidth =
-          isClosed && fillRef.current.mode !== 'none'
-            ? strokeRef.current.width
-            : Math.max(1, strokeRef.current.width);
-        const effectiveStroke = applyColorOpacity(
-          strokeRef.current.color,
-          strokeRef.current.opacity
-        );
-        const dash = getScaledDashArray(strokeRef.current.pattern, finalWidth);
-        const created = buildFabricPathFromWorldSegments(
-          segs,
-          {
-            stroke: finalWidth > 0 ? effectiveStroke : null,
-            strokeColorHex: strokeRef.current.color,
-            strokeOpacity: strokeRef.current.opacity,
-            strokeWidth: finalWidth,
-            strokeDashArray: dash || undefined,
-            strokePattern: strokeRef.current.pattern,
-            doubleLine: strokeRef.current.doubleLine,
-            brushType: 'standard',
-          },
-          isClosed,
-          fillRef.current,
-          true
-        );
-        if (created) {
-          fc.add(created);
-          if (!isClosed) {
-            attachControlsToObject(created);
-          }
-          fc.discardActiveObject();
-          syncFabricToolState();
-          created.setCoords();
-          setSelectedInfo(null);
-          refreshEmptyState();
-          saveHistory();
-          trackFunction('finalize_closed_contour', 'draw', {
-            cancelled: false,
-            closed: isClosed,
-            segments: segs.length,
-            fill_mode: isClosed ? fillRef.current.mode : 'none',
-          });
-        }
-      } else {
-        syncFabricToolState();
-        refreshEmptyState();
-        trackFunction('finalize_closed_contour', 'draw', { cancelled: true });
-      }
-      fc.requestRenderAll();
-    },
-    [
-      attachControlsToObject,
-      refreshEmptyState,
-      refreshSelectedInfo,
-      saveHistory,
-      syncFabricToolState,
-    ]
-  );
-
-  // Finalize or cancel active Bezier editing session
-  const finalizeBezierSession = useCallback(
-    (cancel = false) => {
-      const fc = fabricCanvasRef.current;
-      const session = bezierSessionRef.current;
-      if (!fc || !session) return;
-
-      snapIndicatorRef.current = null;
-      fc.remove(session.h0, session.hc1, session.hc2, session.h3, session.g1, session.g2);
-      let createdPath = session.pathObj;
-      if (cancel) {
-        fc.remove(createdPath);
-      }
-
-      bezierSessionRef.current = null;
-      setIsEditingBezier(false);
-
-      if (!cancel) {
-        if (!createdPath.isClosedContour && snapEnabledRef.current) {
-          const eps = getObjectWorldEndpoints(createdPath);
-          if (eps) {
-            const zoom = fc.getZoom() || 1;
-            const s0 = findNearestEndpointSnap(fc, eps.start, [createdPath], zoom);
-            if (s0 && s0.targetObj && s0.targetEnd !== 'self' && s0.distance <= 3.5) {
-              const merged = mergeTwoOpenObjects(
-                createdPath,
-                'start',
-                s0.targetObj,
-                s0.targetEnd,
-                fillRef.current
-              );
-              if (merged) {
-                fc.remove(createdPath);
-                fc.remove(s0.targetObj);
-                fc.add(merged);
-                createdPath = merged;
-              }
-            }
-            if (!createdPath.isClosedContour) {
-              const epsAfter = getObjectWorldEndpoints(createdPath);
-              if (epsAfter) {
-                const s1 = findNearestEndpointSnap(fc, epsAfter.end, [createdPath], zoom);
-                if (s1 && s1.targetObj && s1.targetEnd !== 'self' && s1.distance <= 3.5) {
-                  const merged2 = mergeTwoOpenObjects(
-                    createdPath,
-                    'end',
-                    s1.targetObj,
-                    s1.targetEnd,
-                    fillRef.current
-                  );
-                  if (merged2) {
-                    fc.remove(createdPath);
-                    fc.remove(s1.targetObj);
-                    fc.add(merged2);
-                    createdPath = merged2;
-                  }
-                }
-              }
-            }
-          }
-        }
-        fc.discardActiveObject();
-        syncFabricToolState();
-        attachControlsToObject(createdPath);
-        createdPath.setCoords();
-        setSelectedInfo(null);
-        refreshEmptyState();
-        saveHistory();
-        trackFunction('finalize_bezier_curve', 'draw', {
-          cancelled: false,
-          closed: Boolean(createdPath?.isClosedContour),
-          fill_mode: createdPath?.fillMeta?.mode || 'none',
-        });
-      } else {
-        syncFabricToolState();
-        refreshEmptyState();
-        trackFunction('finalize_bezier_curve', 'draw', { cancelled: true });
-      }
-      fc.requestRenderAll();
-    },
-    [
-      attachControlsToObject,
-      refreshEmptyState,
-      refreshSelectedInfo,
-      saveHistory,
-      syncFabricToolState,
-    ]
-  );
-
-  // Restore a JSON snapshot (for Undo / Redo)
-  const restoreSnapshot = useCallback(
-    (index: number) => {
-      const fc = fabricCanvasRef.current;
-      const snapshot = historyRef.current[index];
-      if (!fc || snapshot === undefined) return;
-
-      if (bezierSessionRef.current) {
-        finalizeBezierSession(true);
-      }
-      if (contourSessionRef.current) {
-        finalizeContourSession(true);
-      }
-
-      isRestoringRef.current = true;
-      fc.loadFromJSON(JSON.parse(snapshot), () => {
-        const fabric = getFabric();
-        fc.forEachObject((obj: any) => {
-          if (obj.type === 'polygon' && obj.basePathOffset && fabric) {
+  const restoreHistoryIndex = useCallback(
+    (idx: number) => {
+      const fc = fabricRef.current;
+      if (!fc || idx < 0 || idx >= historyRef.current.length) return;
+      isRestoringHistoryRef.current = true;
+      historyIndexRef.current = idx;
+      const json = historyRef.current[idx];
+      fc.loadFromJSON(json, () => {
+        fc.getObjects().forEach((obj: any) => {
+          if (obj.isEraserPath) {
             obj.set({
-              width: obj.baseWidth ?? obj.width,
-              height: obj.baseHeight ?? obj.height,
-              pathOffset: new fabric.Point(obj.basePathOffset.x, obj.basePathOffset.y),
-              dirty: true,
+              selectable: false,
+              evented: false,
+              globalCompositeOperation: 'destination-out',
             });
-          }
-          if (obj.fillMeta?.mode === 'photo' && obj.fillMeta.photoDataUrl) {
+          } else {
+            obj.set({
+              selectable: true,
+              evented: true,
+              cornerColor: '#2563EB',
+              borderColor: '#2563EB',
+            });
             refreshObjectPhotoFill(obj, fc);
-          } else if (
-            obj.fill &&
-            obj.fill.source &&
-            obj.fill.source instanceof HTMLImageElement &&
-            !obj.fill.source.complete
-          ) {
-            obj.fill.source.onload = () => fc.requestRenderAll();
           }
-          if (
-            obj.type === 'rect' ||
-            obj.type === 'triangle' ||
-            obj.type === 'ellipse' ||
-            obj.type === 'circle' ||
-            obj.type === 'polygon' ||
-            (obj.type === 'path' &&
-              (obj.isClosedContour ||
-                (Array.isArray(obj.path) &&
-                  obj.path.some((c: any) => c && (c[0] === 'Z' || c[0] === 'z')))))
-          ) {
-            obj.set({ perPixelTargetFind: false, targetFindTolerance: 16 });
-          }
-          attachControlsToObject(obj);
         });
-        isRestoringRef.current = false;
-        syncFabricToolState();
+        fc.discardActiveObject();
         fc.requestRenderAll();
-        refreshEmptyState();
-        refreshSelectedInfo();
+        redrawBackground();
+        syncHasArtwork();
+        refreshSelectionInfo();
+        setCanUndo(historyIndexRef.current > 0);
+        setCanRedo(historyIndexRef.current < historyRef.current.length - 1);
+        isRestoringHistoryRef.current = false;
       });
-
-      historyIndexRef.current = index;
-      setCanUndo(index > 0);
-      setCanRedo(index < historyRef.current.length - 1);
     },
-    [
-      attachControlsToObject,
-      finalizeBezierSession,
-      finalizeContourSession,
-      refreshEmptyState,
-      refreshSelectedInfo,
-      syncFabricToolState,
-    ]
+    [redrawBackground, refreshSelectionInfo, syncHasArtwork]
   );
 
   const handleUndo = useCallback(() => {
     if (historyIndexRef.current > 0) {
-      restoreSnapshot(historyIndexRef.current - 1);
-      trackFunction('undo_action', 'history', { step: historyIndexRef.current });
+      trackFunction('undo', 'history');
+      restoreHistoryIndex(historyIndexRef.current - 1);
     }
-  }, [restoreSnapshot]);
+  }, [restoreHistoryIndex]);
 
   const handleRedo = useCallback(() => {
     if (historyIndexRef.current < historyRef.current.length - 1) {
-      restoreSnapshot(historyIndexRef.current + 1);
-      trackFunction('redo_action', 'history', { step: historyIndexRef.current });
+      trackFunction('redo', 'history');
+      restoreHistoryIndex(historyIndexRef.current + 1);
     }
-  }, [restoreSnapshot]);
+  }, [restoreHistoryIndex]);
 
-  // Initialize Fabric.js Canvas
+  const applyClipForArtboard = useCallback(() => {
+    const fc = fabricRef.current;
+    const fabric = getFabric();
+    if (!fc || !fabric) return;
+    const cs = canvasSizeRef.current;
+    if (cs.preset === 'fullscreen') {
+      fc.clipPath = undefined;
+    } else {
+      const r = getArtboardWorldRect(ARTBOARD_CENTER, cs);
+      fc.clipPath = new fabric.Rect({
+        left: r.left,
+        top: r.top,
+        width: r.width,
+        height: r.height,
+        originX: 'left',
+        originY: 'top',
+        absolutePositioned: true,
+      });
+    }
+    fc.requestRenderAll();
+    redrawBackground();
+  }, [redrawBackground]);
+
+  const fitViewportToArtboard = useCallback(
+    (cs: CanvasSizeConfig) => {
+      const fc = fabricRef.current;
+      if (!fc) return;
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      if (cs.preset === 'fullscreen') {
+        fc.setViewportTransform([1, 0, 0, 1, 0, 0]);
+        setZoomPercent(100);
+      } else {
+        const pad = 48;
+        const scale = Math.min(
+          1,
+          Math.max(0.15, Math.min((vw - pad) / cs.width, (vh - pad) / cs.height))
+        );
+        const tx = vw / 2 - ARTBOARD_CENTER.x * scale;
+        const ty = vh / 2 - ARTBOARD_CENTER.y * scale;
+        fc.setViewportTransform([scale, 0, 0, scale, tx, ty]);
+        setZoomPercent(Math.round(scale * 100));
+      }
+      redrawBackground();
+      fc.requestRenderAll();
+      refreshSelectionInfo();
+    },
+    [redrawBackground, refreshSelectionInfo]
+  );
+
+  // Configure Fabric drawing brush whenever mode, stroke, or eraserSize updates
+  const syncFabricToolState = useCallback(() => {
+    const fc = fabricRef.current;
+    const fabric = getFabric();
+    if (!fc || !fabric) return;
+
+    const mode = activeModeRef.current;
+    const st = strokeRef.current;
+
+    if (mode === 'select') {
+      fc.isDrawingMode = false;
+      fc.selection = true;
+      fc.skipTargetFind = false;
+      fc.defaultCursor = 'default';
+      fc.getObjects().forEach((obj: any) => {
+        if (obj.isEraserPath) {
+          obj.set({ selectable: false, evented: false });
+        } else {
+          obj.set({ selectable: true, evented: true });
+        }
+      });
+    } else if (mode === 'brush') {
+      if (isTexturedBrush(st.brushType)) {
+        fc.isDrawingMode = false;
+        fc.selection = false;
+        fc.skipTargetFind = true;
+        fc.defaultCursor = 'crosshair';
+      } else if (st.brushType === 'spray') {
+        fc.isDrawingMode = true;
+        fc.selection = false;
+        fc.skipTargetFind = true;
+        const spray = new fabric.SprayBrush(fc);
+        spray.width = Math.max(8, st.width * 3.2);
+        spray.density = Math.max(18, Math.round(st.width * 2.5));
+        spray.dotWidth = Math.max(1.2, st.width * 0.22);
+        spray.dotWidthVariance = 1.5;
+        spray.color = applyColorOpacity(st.color, st.opacity);
+        fc.freeDrawingBrush = spray;
+      } else {
+        fc.isDrawingMode = true;
+        fc.selection = false;
+        fc.skipTargetFind = true;
+        const pencil = new fabric.PencilBrush(fc);
+        const sw = Math.max(1, st.width);
+        pencil.width = sw;
+        pencil.color = applyColorOpacity(st.color, st.opacity);
+        pencil.strokeDashArray = getScaledDashArray(st.pattern, sw);
+        pencil.strokeLineCap = 'round';
+        pencil.strokeLineJoin = 'round';
+        if (st.brushType === 'soft') {
+          pencil.shadow = new fabric.Shadow({
+            blur: Math.max(4, sw * 0.9),
+            offsetX: 0,
+            offsetY: 0,
+            color: applyColorOpacity(st.color, Math.min(1, st.opacity * 0.85)),
+            affectStroke: true,
+          });
+        } else {
+          pencil.shadow = null;
+        }
+        fc.freeDrawingBrush = pencil;
+      }
+    } else if (mode === 'eraser') {
+      fc.isDrawingMode = true;
+      fc.selection = false;
+      fc.skipTargetFind = true;
+      const eb = new fabric.PencilBrush(fc);
+      eb.width = eraserSizeRef.current;
+      eb.color = 'rgba(0,0,0,1)';
+      eb.strokeLineCap = 'round';
+      eb.strokeLineJoin = 'round';
+      eb.shadow = null;
+      fc.freeDrawingBrush = eb;
+    } else {
+      fc.isDrawingMode = false;
+      fc.selection = false;
+      fc.skipTargetFind = true;
+      fc.defaultCursor = 'crosshair';
+    }
+
+    if (mode !== 'select') {
+      selectedVertexRef.current = null;
+      fc.discardActiveObject();
+      setSelectedInfo(null);
+    } else if (bezierEditRef.current?.pathObj) {
+      const prevBezierObj = bezierEditRef.current.pathObj;
+      bezierEditRef.current = null;
+      if (fc.getObjects().includes(prevBezierObj)) {
+        fc.setActiveObject(prevBezierObj);
+      }
+    }
+    if (mode !== 'bezier' && bezierEditRef.current) {
+      bezierEditRef.current = null;
+    }
+    fc.requestRenderAll();
+  }, []);
+
+  useEffect(() => {
+    syncFabricToolState();
+  }, [activeMode, stroke, eraserSize, syncFabricToolState]);
+
+  // Commit multi-segment contour / polyline points
+  const commitContourPoints = useCallback(
+    (closeIt: boolean) => {
+      const fc = fabricRef.current;
+      const pts = contourPointsRef.current;
+      polylineHoverPtRef.current = null;
+      snapIndicatorRef.current = null;
+      if (!fc || pts.length < 2) {
+        setContourPoints([]);
+        fc?.requestRenderAll();
+        return;
+      }
+      const st = strokeRef.current;
+      const segs: WorldSegment[] = [];
+      for (let i = 0; i < pts.length - 1; i++) {
+        segs.push({ type: 'L', from: pts[i], to: pts[i + 1] });
+      }
+      const shouldClose = closeIt && pts.length >= 3;
+      const obj = buildFabricPathFromWorldSegments(
+        segs,
+        {
+          stroke: st.width > 0 ? applyColorOpacity(st.color, st.opacity) : null,
+          strokeColorHex: st.color,
+          strokeOpacity: st.opacity,
+          strokeWidth: st.width,
+          strokeDashArray: getScaledDashArray(st.pattern, st.width),
+          strokePattern: st.pattern,
+          doubleLine: st.doubleLine,
+          brushType: 'standard',
+        },
+        shouldClose,
+        fillRef.current,
+        true
+      );
+      if (obj) {
+        fc.add(obj);
+        if (!shouldClose && snapEnabledRef.current) {
+          mergeObjectWithEndpointSnaps(fc, obj, fillRef.current);
+        }
+        pushHistory();
+      }
+      setContourPoints([]);
+      fc.requestRenderAll();
+    },
+    [pushHistory]
+  );
+
+  // Initialize Fabric Canvas & Listeners once
   useEffect(() => {
     const fabric = getFabric();
-    if (!fabric || !fabricElRef.current) return;
+    const el = canvasElRef.current;
+    if (!fabric || !el) return;
 
     installDoubleLineStrokeHook();
 
-    fabric.Object.prototype.set({
-      transparentCorners: false,
-      cornerColor: '#2563EB',
-      cornerStrokeColor: '#FFFFFF',
-      borderColor: '#2563EB',
-      cornerSize: 11,
-      touchCornerSize: 22,
-      cornerStyle: 'circle',
-      padding: 6,
-      borderScaleFactor: 1.5,
-      snapAngle: 45,
-      snapThreshold: 5.5,
-    });
-    fabric.ActiveSelection?.prototype?.set?.({
-      snapAngle: 45,
-      snapThreshold: 5.5,
-    });
-    fabric.IText?.prototype?.set?.({
-      snapAngle: 45,
-      snapThreshold: 5.5,
-    });
-    fabric.Group?.prototype?.set?.({
-      snapAngle: 45,
-      snapThreshold: 5.5,
-    });
-
-    const fc = new fabric.Canvas(fabricElRef.current, {
-      width: window.innerWidth,
-      height: window.innerHeight,
-      backgroundColor: null,
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    const fc = new fabric.Canvas(el, {
+      width: w,
+      height: h,
       preserveObjectStacking: true,
-      targetFindTolerance: 16,
-      isDrawingMode: true,
+      selection: false,
+      fireRightClick: true,
+      fireMiddleClick: true,
+      stopContextMenu: true,
       enableRetinaScaling: true,
     });
+    fabricRef.current = fc;
 
-    const origCheckTarget = fc._checkTarget.bind(fc);
-    fc._checkTarget = function (pointer: any, obj: any, globalPointer: any) {
-      if (obj && obj === fc._activeObject && obj.visible && obj.evented) {
-        if (obj.containsPoint(pointer)) {
-          return true;
-        }
-      }
-      return origCheckTarget(pointer, obj, globalPointer);
-    };
-
-    fabricCanvasRef.current = fc;
-    renderBackground();
+    // Seed initial undo snapshot
+    historyRef.current = [JSON.stringify(fc.toObject(CUSTOM_FABRIC_PROPS))];
+    historyIndexRef.current = 0;
+    setCanUndo(false);
+    setCanRedo(false);
+    redrawBackground();
     syncFabricToolState();
 
-    // Save blank initial state
-    const initialJson = JSON.stringify(fc.toJSON(CUSTOM_JSON_PROPS));
-    historyRef.current = [initialJson];
-    historyIndexRef.current = 0;
-
-    const clearCornerLongPressTimer = () => {
-      if (longPressCornerTimerRef.current !== null) {
-        window.clearTimeout(longPressCornerTimerRef.current);
-        longPressCornerTimerRef.current = null;
+    // Animated marching ants loop for lasso
+    let rafId = 0;
+    const tickLasso = () => {
+      if (isDrawingLassoRef.current && lassoPointsRef.current.length > 1) {
+        fc.requestRenderAll();
       }
-      pendingCornerPressRef.current = null;
+      rafId = window.requestAnimationFrame(tickLasso);
     };
+    rafId = window.requestAnimationFrame(tickLasso);
 
-    const clearEmptyLongPressTimer = () => {
-      if (emptyLongPressTimerRef.current !== null) {
-        window.clearTimeout(emptyLongPressTimerRef.current);
-        emptyLongPressTimerRef.current = null;
-      }
-      emptyLongPressStartRef.current = null;
-    };
+    // Path created from Pencil / Spray / Eraser brushes
+    fc.on('path:created', (opt: any) => {
+      const path = opt?.path;
+      if (!path) return;
+      const mode = activeModeRef.current;
+      const st = strokeRef.current;
+      snapIndicatorRef.current = null;
 
-    const getRawClientPoint = (rawEvt: MouseEvent | TouchEvent): { clientX: number; clientY: number } => {
-      if ('touches' in rawEvt) {
-        const tPt = rawEvt.touches[0] || rawEvt.changedTouches[0];
-        return tPt
-          ? { clientX: tPt.clientX, clientY: tPt.clientY }
-          : { clientX: 0, clientY: 0 };
-      }
-      return {
-        clientX: rawEvt.clientX,
-        clientY: rawEvt.clientY,
-      };
-    };
-
-    const disarmCornerRounding = () => {
-      clearCornerLongPressTimer();
-      cornerRoundingDragRef.current = null;
-      const armed = cornerRoundingArmedObjRef.current;
-      if (armed) {
-        armed.set({
-          cornerColor: '#2563EB',
-          borderColor: '#2563EB',
+      if (mode === 'eraser') {
+        path.set({
+          isEraserPath: true,
+          selectable: false,
+          evented: false,
+          fill: null,
+          stroke: 'rgba(0,0,0,1)',
+          strokeWidth: eraserSizeRef.current,
+          strokeLineCap: 'round',
+          strokeLineJoin: 'round',
+          globalCompositeOperation: 'destination-out',
         });
-        cornerRoundingArmedObjRef.current = null;
-      }
-      setCornerRoundHud(null);
-      fc.requestRenderAll();
-    };
-
-    const getCanvasRelativePoint = (rawEvt: MouseEvent | TouchEvent): Point => {
-      const el = fc.upperCanvasEl as HTMLElement | undefined;
-      const rect = el ? el.getBoundingClientRect() : { left: 0, top: 0 };
-      if ('touches' in rawEvt) {
-        const tPt = rawEvt.touches[0] || rawEvt.changedTouches[0];
-        return tPt
-          ? { x: tPt.clientX - rect.left, y: tPt.clientY - rect.top }
-          : { x: 0, y: 0 };
-      }
-      return {
-        x: rawEvt.clientX - rect.left,
-        y: rawEvt.clientY - rect.top,
-      };
-    };
-
-    let zOrderChangedOnTap = false;
-
-    const bringTargetToFrontLayer = (target: any) => {
-      if (!target || target.excludeFromExport || target.isEraserPath) return;
-      if (isRestoringRef.current || activeModeRef.current !== 'select') return;
-      const objs = fc.getObjects();
-      if (objs.length <= 1) return;
-
-      if (target.type === 'activeSelection' && typeof target.getObjects === 'function') {
-        const items = target.getObjects();
-        let changed = false;
-        items.forEach((child: any) => {
-          if (child && !child.excludeFromExport && !child.isEraserPath) {
-            fc.bringToFront(child);
-            changed = true;
-          }
-        });
-        if (changed) {
-          zOrderChangedOnTap = true;
-          fc.requestRenderAll();
-        }
+        fc.requestRenderAll();
+        pushHistory();
         return;
       }
 
-      const curIdx = objs.indexOf(target);
-      if (curIdx >= 0 && curIdx < objs.length - 1) {
-        fc.bringToFront(target);
-        zOrderChangedOnTap = true;
+      if (st.brushType === 'spray') {
+        path.set({
+          isSprayGroup: true,
+          brushType: 'spray',
+          strokeColorHex: st.color,
+          strokeOpacity: st.opacity,
+          cornerColor: '#2563EB',
+          borderColor: '#2563EB',
+        });
         fc.requestRenderAll();
+        pushHistory();
+        return;
       }
-    };
 
-    // Selection & transform tracking (keeps top-right Pencil icon synced & elevates touched layer)
-    const updateSel = () => refreshSelectedInfo();
-    const ensureRotationSnap = (target: any) => {
-      if (!target) return;
-      if (target.snapAngle !== 45 || target.snapThreshold !== 5.5) {
-        target.set({ snapAngle: 45, snapThreshold: 5.5 });
+      path.set({
+        strokeColorHex: st.color,
+        strokeOpacity: st.opacity,
+        strokePattern: st.pattern,
+        doubleLine: st.doubleLine,
+        brushType: st.brushType,
+        strokeUniform: true,
+        perPixelTargetFind: !closedContourRef.current,
+        targetFindTolerance: 14,
+        cornerColor: '#2563EB',
+        borderColor: '#2563EB',
+      });
+
+      if (closedContourRef.current) {
+        const closedObj = convertObjectToClosedContour(path, fillRef.current, false);
+        if (closedObj) {
+          fc.remove(path);
+          fc.add(closedObj);
+        }
+      } else if (snapEnabledRef.current) {
+        mergeObjectWithEndpointSnaps(fc, path, fillRef.current);
       }
+      fc.requestRenderAll();
+      pushHistory();
+    });
+
+    // Selection lifecycle
+    const onSelectionChange = () => {
+      const curActive = fc.getActiveObject();
+      if (selectedVertexRef.current && selectedVertexRef.current.obj !== curActive) {
+        selectedVertexRef.current = null;
+      }
+      applyEndpointControlsToSelection();
+      refreshSelectionInfo();
     };
-    fc.on('selection:created', () => {
-      const active = fc.getActiveObject();
-      ensureRotationSnap(active);
-      bringTargetToFrontLayer(active);
-      refreshSelectedInfo();
-    });
-    fc.on('selection:updated', () => {
-      disarmCornerRounding();
-      const active = fc.getActiveObject();
-      ensureRotationSnap(active);
-      bringTargetToFrontLayer(active);
-      refreshSelectedInfo();
-    });
+    fc.on('selection:created', onSelectionChange);
+    fc.on('selection:updated', onSelectionChange);
     fc.on('selection:cleared', () => {
-      disarmCornerRounding();
-      setRotatingAngleHud(null);
+      selectedVertexRef.current = null;
+      snapIndicatorRef.current = null;
       setSelectedInfo(null);
-      setObjectEditorOpen(false);
     });
-    fc.on('object:scaling', (e: any) => {
-      if (
-        e?.target &&
-        (e.target.type === 'polygon' ||
-          e.target.type === 'rect' ||
-          e.target.type === 'path') &&
-        typeof e.target.cornerRoundRatio === 'number' &&
-        e.target.cornerRoundRatio > 0
-      ) {
-        applyCornerRoundingToObject(e.target, e.target.cornerRoundRatio);
+
+    fc.on('object:modified', (e: any) => {
+      rotatingAngleHudRef.current = null;
+      const target = e?.target;
+      if (target) {
+        refreshObjectPhotoFill(target, fc);
+        if (snapEnabledRef.current && isMergeableOpenLine(target)) {
+          const merged = mergeObjectWithEndpointSnaps(fc, target, fillRef.current);
+          if (merged) {
+            selectedVertexRef.current = null;
+            fc.setActiveObject(merged);
+            applyEndpointControlsToSelection();
+            fc.requestRenderAll();
+          }
+        }
       }
-      if (e?.target?.fillMeta?.mode === 'photo') {
-        refreshObjectPhotoFill(e.target, fc);
-      }
-      updateSel();
+      snapIndicatorRef.current = null;
+      refreshSelectionInfo();
+      pushHistory();
     });
+
+    fc.on('object:moving', (e: any) => {
+      selectedVertexRef.current = null;
+      const target = e?.target;
+      if (snapEnabledRef.current && isMergeableOpenLine(target)) {
+        const eps = getObjectWorldEndpoints(target);
+        const zoom = fc.getZoom() || 1;
+        if (eps) {
+          const mStart = findNearestEndpointSnap(fc, eps.start, [target], zoom);
+          const mEnd = findNearestEndpointSnap(fc, eps.end, [target], zoom);
+          const best =
+            mStart && (!mEnd || mStart.distance <= mEnd.distance) ? mStart : mEnd;
+          if (best) {
+            const matchedEnd = best === mStart ? eps.start : eps.end;
+            target.set({
+              left: (target.left || 0) + (best.point.x - matchedEnd.x),
+              top: (target.top || 0) + (best.point.y - matchedEnd.y),
+            });
+            target.setCoords();
+            snapIndicatorRef.current = best.point;
+          } else {
+            snapIndicatorRef.current = null;
+          }
+        }
+      } else {
+        snapIndicatorRef.current = null;
+      }
+      refreshSelectionInfo();
+    });
+    fc.on('object:scaling', refreshSelectionInfo);
     fc.on('object:rotating', (e: any) => {
       const target = e?.target;
       if (target) {
-        ensureRotationSnap(target);
-        const norm = ((((target.angle || 0) % 360) + 360) % 360);
-        const deg = Math.round(norm) % 360;
-        const isSnapped = Math.abs(norm - Math.round(norm / 45) * 45) < 0.01 || deg % 45 === 0;
-        const isCardinal = deg % 90 === 0;
-        setRotatingAngleHud({ deg, isSnapped, isCardinal });
+        const raw = (((target.angle || 0) % 360) + 360) % 360;
+        const shift = Boolean(e?.e?.shiftKey);
+        const step = shift ? 15 : 45;
+        const nearest = Math.round(raw / step) * step;
+        let snappedAngle = raw;
+        let snapped = false;
+        if (shift || Math.abs(raw - nearest) <= 6) {
+          snappedAngle = nearest % 360;
+          snapped = true;
+        }
+        target.set('angle', snappedAngle);
+        const center = target.getCenterPoint();
+        const vpt = fc.viewportTransform || [1, 0, 0, 1, 0, 0];
+        const sc = fabric.util.transformPoint(new fabric.Point(center.x, center.y), vpt);
+        rotatingAngleHudRef.current = {
+          angle: Math.round(snappedAngle),
+          screenX: sc.x,
+          screenY: Math.max(36, sc.y - 44),
+          snapped,
+        };
       }
-      updateSel();
+      refreshSelectionInfo();
     });
 
-    // Re-render background whenever viewport transforms or canvas renders + draw snap indicator
+    fc.on('mouse:dblclick', (opt: any) => {
+      const mode = activeModeRef.current;
+      if (
+        (mode === 'polyline' || (mode === 'line' && closedContourRef.current)) &&
+        contourPointsRef.current.length >= 2
+      ) {
+        commitContourPoints(closedContourRef.current && contourPointsRef.current.length >= 3);
+        return;
+      }
+      const target = opt?.target;
+      if (target && (target.type === 'i-text' || target.type === 'textbox')) {
+        target.enterEditing();
+        target.selectAll?.();
+        fc.requestRenderAll();
+      }
+    });
+
+    // Overlay rendering (Lasso, Bezier handles, Contour/Polyline preview, Corner nodes, Snap indicator, Rotation HUD)
     fc.on('after:render', () => {
-      renderBackground();
-      const snapPt = snapIndicatorRef.current;
-      if (snapPt) {
-        const ctx = fc.getContext();
-        const r =
-          typeof fc.getRetinaScaling === 'function'
-            ? fc.getRetinaScaling()
-            : window.devicePixelRatio || 1;
-        const vpt = fc.viewportTransform || [1, 0, 0, 1, 0, 0];
-        const scr = fabric.util.transformPoint(
-          new fabric.Point(snapPt.x, snapPt.y),
+      const ctx = fc.getContext();
+      if (!ctx) return;
+      const vpt = fc.viewportTransform || [1, 0, 0, 1, 0, 0];
+      const retina = fc.getRetinaScaling ? fc.getRetinaScaling() : 1;
+
+      if (isDrawingLassoRef.current && lassoPointsRef.current.length > 1) {
+        drawLassoOverlayOnContext(ctx, lassoPointsRef.current, vpt, retina, fabric);
+      }
+
+      // Contour / Polyline preview with rubber-band cursor segment
+      if (contourPointsRef.current.length > 0) {
+        ctx.save();
+        ctx.setTransform(retina, 0, 0, retina, 0, 0);
+        const screenPts = contourPointsRef.current.map((p) =>
+          fabric.util.transformPoint(new fabric.Point(p.x, p.y), vpt)
+        );
+        ctx.beginPath();
+        ctx.moveTo(screenPts[0].x, screenPts[0].y);
+        for (let i = 1; i < screenPts.length; i++) {
+          ctx.lineTo(screenPts[i].x, screenPts[i].y);
+        }
+        ctx.strokeStyle = '#2563EB';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 4]);
+        ctx.stroke();
+
+        if (polylineHoverPtRef.current) {
+          const sh = fabric.util.transformPoint(
+            new fabric.Point(polylineHoverPtRef.current.x, polylineHoverPtRef.current.y),
+            vpt
+          );
+          const last = screenPts[screenPts.length - 1];
+          ctx.beginPath();
+          ctx.moveTo(last.x, last.y);
+          ctx.lineTo(sh.x, sh.y);
+          ctx.strokeStyle = 'rgba(37, 99, 235, 0.55)';
+          ctx.lineWidth = 1.75;
+          ctx.setLineDash([4, 4]);
+          ctx.stroke();
+        }
+        ctx.setLineDash([]);
+
+        screenPts.forEach((sp, idx) => {
+          ctx.beginPath();
+          ctx.arc(sp.x, sp.y, idx === 0 ? 6 : 4, 0, Math.PI * 2);
+          ctx.fillStyle = idx === 0 ? '#10B981' : '#FFFFFF';
+          ctx.fill();
+          ctx.lineWidth = 2;
+          ctx.strokeStyle = idx === 0 ? '#FFFFFF' : '#2563EB';
+          ctx.stroke();
+        });
+        ctx.restore();
+      }
+
+      // Bezier tangent handles right after drawing in Bezier mode
+      if (activeModeRef.current === 'bezier' && bezierEditRef.current) {
+        const { p1, cp1, cp2, p2 } = bezierEditRef.current;
+        const sp1 = fabric.util.transformPoint(new fabric.Point(p1.x, p1.y), vpt);
+        const scp1 = fabric.util.transformPoint(new fabric.Point(cp1.x, cp1.y), vpt);
+        const scp2 = fabric.util.transformPoint(new fabric.Point(cp2.x, cp2.y), vpt);
+        const sp2 = fabric.util.transformPoint(new fabric.Point(p2.x, p2.y), vpt);
+        ctx.save();
+        ctx.setTransform(retina, 0, 0, retina, 0, 0);
+        ctx.strokeStyle = 'rgba(37, 99, 235, 0.7)';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(sp1.x, sp1.y);
+        ctx.lineTo(scp1.x, scp1.y);
+        ctx.moveTo(sp2.x, sp2.y);
+        ctx.lineTo(scp2.x, scp2.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        [sp1, sp2].forEach((p) => {
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 5.5, 0, Math.PI * 2);
+          ctx.fillStyle = '#FFFFFF';
+          ctx.fill();
+          ctx.lineWidth = 2;
+          ctx.strokeStyle = '#2563EB';
+          ctx.stroke();
+        });
+        [scp1, scp2].forEach((p) => {
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 6.8, 0, Math.PI * 2);
+          ctx.fillStyle = '#F59E0B';
+          ctx.fill();
+          ctx.lineWidth = 2;
+          ctx.strokeStyle = '#FFFFFF';
+          ctx.stroke();
+        });
+        ctx.restore();
+      }
+
+      // Persistent cubic Bezier tangent handles (in Select mode or right after creation in Bezier mode)
+      if (activeModeRef.current === 'select') {
+        const activeObj = fc.getActiveObject();
+        if (activeObj && activeObj.type !== 'activeSelection' && isBezierPathObject(activeObj)) {
+          const bHandles = getObjectBezierControlHandles(activeObj);
+          if (bHandles.length > 0) {
+            ctx.save();
+            ctx.setTransform(retina, 0, 0, retina, 0, 0);
+            ctx.strokeStyle = 'rgba(37, 99, 235, 0.7)';
+            ctx.lineWidth = 1.5;
+            ctx.setLineDash([4, 4]);
+            ctx.beginPath();
+            bHandles.forEach((h) => {
+              const sa = fabric.util.transformPoint(new fabric.Point(h.anchor.x, h.anchor.y), vpt);
+              const sp = fabric.util.transformPoint(new fabric.Point(h.point.x, h.point.y), vpt);
+              ctx.moveTo(sa.x, sa.y);
+              ctx.lineTo(sp.x, sp.y);
+            });
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            bHandles.forEach((h) => {
+              const sp = fabric.util.transformPoint(new fabric.Point(h.point.x, h.point.y), vpt);
+              const isDragging = Boolean(
+                bezierHandleDragRef.current &&
+                  bezierHandleDragRef.current.obj === activeObj &&
+                  bezierHandleDragRef.current.segIndex === h.segIndex &&
+                  bezierHandleDragRef.current.handle === h.kind
+              );
+              ctx.beginPath();
+              ctx.arc(sp.x, sp.y, isDragging ? 7.6 : 6.4, 0, Math.PI * 2);
+              ctx.fillStyle = '#F59E0B';
+              ctx.fill();
+              ctx.lineWidth = 2;
+              ctx.strokeStyle = '#FFFFFF';
+              ctx.stroke();
+            });
+            ctx.restore();
+          }
+        }
+      }
+
+      // Editable vertex nodes & corner rounding handles (green when tapped/selected)
+      if (activeModeRef.current === 'select') {
+        const activeObj = fc.getActiveObject();
+        if (activeObj && activeObj.type !== 'activeSelection') {
+          const editable = isObjectVertexEditable(activeObj);
+          const roundable = isObjectCornerRoundable(activeObj);
+          if (editable || roundable) {
+            const verts = editable
+              ? getObjectEditableWorldVertices(activeObj)
+              : getObjectCornerWorldVertices(activeObj);
+            if (verts.length > 0) {
+              const hasSnapEpControls = Boolean(
+                snapEnabledRef.current && isMergeableOpenLine(activeObj)
+              );
+              ctx.save();
+              ctx.setTransform(retina, 0, 0, retina, 0, 0);
+              verts.forEach((v, idx) => {
+                const isSelectedVert = Boolean(
+                  selectedVertexRef.current &&
+                    selectedVertexRef.current.obj === activeObj &&
+                    selectedVertexRef.current.index === idx
+                );
+                if (
+                  !isSelectedVert &&
+                  hasSnapEpControls &&
+                  (idx === 0 || idx === verts.length - 1)
+                ) {
+                  return;
+                }
+                const sv = fabric.util.transformPoint(new fabric.Point(v.x, v.y), vpt);
+                if (isSelectedVert) {
+                  ctx.beginPath();
+                  ctx.arc(sv.x, sv.y, 11.5, 0, Math.PI * 2);
+                  ctx.fillStyle = 'rgba(16, 185, 129, 0.24)';
+                  ctx.fill();
+
+                  ctx.beginPath();
+                  ctx.arc(sv.x, sv.y, 6.8, 0, Math.PI * 2);
+                  ctx.fillStyle = '#10B981';
+                  ctx.fill();
+                  ctx.lineWidth = 2.2;
+                  ctx.strokeStyle = '#FFFFFF';
+                  ctx.stroke();
+
+                  ctx.beginPath();
+                  ctx.arc(sv.x, sv.y, 2, 0, Math.PI * 2);
+                  ctx.fillStyle = '#FFFFFF';
+                  ctx.fill();
+                } else {
+                  ctx.beginPath();
+                  ctx.arc(sv.x, sv.y, cornerRoundDragRef.current ? 5.5 : 4.4, 0, Math.PI * 2);
+                  ctx.fillStyle = cornerRoundDragRef.current ? '#F59E0B' : '#FFFFFF';
+                  ctx.fill();
+                  ctx.lineWidth = 1.8;
+                  ctx.strokeStyle = '#F59E0B';
+                  ctx.stroke();
+                }
+              });
+              ctx.restore();
+            }
+          }
+        }
+      }
+
+      // Endpoint snap indicator
+      if (snapIndicatorRef.current) {
+        const spt = fabric.util.transformPoint(
+          new fabric.Point(snapIndicatorRef.current.x, snapIndicatorRef.current.y),
           vpt
         );
         ctx.save();
-        ctx.setTransform(r, 0, 0, r, 0, 0);
+        ctx.setTransform(retina, 0, 0, retina, 0, 0);
         ctx.beginPath();
-        ctx.arc(scr.x, scr.y, 10, 0, Math.PI * 2);
+        ctx.arc(spt.x, spt.y, 9, 0, Math.PI * 2);
         ctx.fillStyle = 'rgba(16, 185, 129, 0.22)';
         ctx.fill();
         ctx.lineWidth = 2.5;
         ctx.strokeStyle = '#10B981';
         ctx.stroke();
-        ctx.beginPath();
-        ctx.arc(scr.x, scr.y, 3, 0, Math.PI * 2);
-        ctx.fillStyle = '#10B981';
-        ctx.fill();
         ctx.restore();
       }
 
-      if (isDrawingLassoRef.current && lassoPointsRef.current.length >= 2) {
-        const ctx = fc.getContext();
-        const r =
-          typeof fc.getRetinaScaling === 'function'
-            ? fc.getRetinaScaling()
-            : window.devicePixelRatio || 1;
-        const vpt = fc.viewportTransform || [1, 0, 0, 1, 0, 0];
-        drawLassoOverlayOnContext(ctx, lassoPointsRef.current, vpt, r, fabric);
-        if (lassoRafRef.current === null) {
-          lassoRafRef.current = window.requestAnimationFrame(() => {
-            lassoRafRef.current = null;
-            if (isDrawingLassoRef.current && fabricCanvasRef.current === fc) {
-              fc.requestRenderAll();
-            }
-          });
-        }
+      // Live rotation angle snap badge
+      if (rotatingAngleHudRef.current) {
+        const hud = rotatingAngleHudRef.current;
+        const label = `${hud.angle}°`;
+        ctx.save();
+        ctx.setTransform(retina, 0, 0, retina, 0, 0);
+        ctx.font = '600 12px Inter, system-ui, sans-serif';
+        const tw = ctx.measureText(label).width;
+        const pw = tw + 16;
+        const ph = 24;
+        const rx = hud.screenX - pw / 2;
+        const ry = hud.screenY - ph / 2;
+        ctx.beginPath();
+        ctx.roundRect(rx, ry, pw, ph, 8);
+        ctx.fillStyle = hud.snapped ? '#059669' : '#0F172A';
+        ctx.fill();
+        ctx.fillStyle = '#FFFFFF';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(label, hud.screenX, hud.screenY + 0.5);
+        ctx.restore();
       }
     });
 
-    // Freehand / Eraser / Spray path completion
-    fc.on('path:created', (e: any) => {
-      if (!e?.path) return;
-      if (activeModeRef.current === 'eraser') {
-        e.path.set({
-          globalCompositeOperation: 'destination-out',
-          stroke: '#000000',
-          strokeDashArray: null,
-          selectable: false,
-          evented: false,
-          isEraserPath: true,
-        });
-      } else if (e.path.type === 'group') {
-        e.path.set({
-          isSprayGroup: true,
-          brushType: 'spray',
-          strokeColorHex: strokeRef.current.color,
-          strokeOpacity: strokeRef.current.opacity,
-          selectable: false,
-          evented: false,
-        });
-      } else {
-        const bType = strokeRef.current.brushType;
-        const effectiveStroke = applyColorOpacity(
-          strokeRef.current.color,
-          strokeRef.current.opacity
-        );
-        const allowZero = closedContourRef.current && fillRef.current.mode !== 'none';
-        const finalWidth = allowZero
-          ? strokeRef.current.width
-          : Math.max(1, strokeRef.current.width);
-        e.path.set({
-          stroke: finalWidth > 0 ? effectiveStroke : null,
-          strokeWidth: finalWidth,
-          strokeColorHex: strokeRef.current.color,
-          strokeOpacity: strokeRef.current.opacity,
-          strokeUniform: true,
-          strokePattern: strokeRef.current.pattern,
-          doubleLine: bType === 'soft' ? false : strokeRef.current.doubleLine,
-          brushType: bType,
-          selectable: false,
-          evented: false,
-        });
-        if (finalWidth === 0) {
-          e.path.set({ shadow: null });
-        }
-
-        if (closedContourRef.current) {
-          const closed = convertObjectToClosedContour(e.path, fillRef.current, false);
-          if (closed) {
-            const idx = fc.getObjects().indexOf(e.path);
-            fc.remove(e.path);
-            if (idx >= 0) {
-              fc.insertAt(closed, idx, false);
-            } else {
-              fc.add(closed);
-            }
-            e.path = closed;
-          }
-        } else {
-          attachControlsToObject(e.path);
-        }
-      }
-      fc.requestRenderAll();
-      saveHistory();
-      if (activeModeRef.current === 'eraser') {
-        trackFunction('erase_stroke', 'eraser', { eraser_size: eraserSizeRef.current });
-      } else if (e.path.isSprayGroup) {
-        trackFunction('draw_freehand_stroke', 'draw', { brush_type: 'spray' });
-      } else {
-        trackFunction('draw_freehand_stroke', 'draw', {
-          brush_type: strokeRef.current.brushType,
-          closed_contour: closedContourRef.current,
-          fill_mode: closedContourRef.current ? fillRef.current.mode : 'none',
-          stroke_width: strokeRef.current.width,
-        });
-      }
-    });
-
-    // Object transformation history + endpoint merge completion
-    fc.on('object:modified', (e: any) => {
-      if (e?.target?.excludeFromExport) return;
-      zOrderChangedOnTap = false;
-      snapIndicatorRef.current = null;
-
-      const pendingMerge = pendingEndpointMergeRef.current;
-      pendingEndpointMergeRef.current = null;
-      if (pendingMerge && pendingMerge.obj === e?.target) {
-        if (pendingMerge.snap.targetEnd === 'self') {
-          const closed = convertObjectToClosedContour(
-            pendingMerge.obj,
-            fillRef.current,
-            true
-          );
-          if (closed) {
-            const idx = fc.getObjects().indexOf(pendingMerge.obj);
-            fc.remove(pendingMerge.obj);
-            if (idx >= 0) {
-              fc.insertAt(closed, idx, false);
-            } else {
-              fc.add(closed);
-            }
-            fc.setActiveObject(closed);
-            fc.requestRenderAll();
-            refreshSelectedInfo();
-            saveHistory();
-            trackFunction('merge_endpoints', 'draw', { kind: 'self_close' });
-            return;
-          }
-        } else if (
-          pendingMerge.snap.targetObj &&
-          fc.getObjects().includes(pendingMerge.snap.targetObj)
-        ) {
-          const merged = mergeTwoOpenObjects(
-            pendingMerge.obj,
-            pendingMerge.end,
-            pendingMerge.snap.targetObj,
-            pendingMerge.snap.targetEnd,
-            fillRef.current
-          );
-          if (merged) {
-            fc.remove(pendingMerge.obj);
-            fc.remove(pendingMerge.snap.targetObj);
-            fc.add(merged);
-            attachControlsToObject(merged);
-            fc.setActiveObject(merged);
-            fc.requestRenderAll();
-            refreshSelectedInfo();
-            saveHistory();
-            trackFunction('merge_endpoints', 'draw', { kind: 'join_lines' });
-            return;
-          }
-        }
-      }
-
-      if (
-        e?.target &&
-        (e.target.type === 'polygon' ||
-          e.target.type === 'rect' ||
-          e.target.type === 'path') &&
-        typeof e.target.cornerRoundRatio === 'number' &&
-        e.target.cornerRoundRatio > 0
-      ) {
-        applyCornerRoundingToObject(e.target, e.target.cornerRoundRatio);
-      }
-      if (e?.target?.fillMeta?.mode === 'photo') {
-        refreshObjectPhotoFill(e.target, fc);
-      }
-      if (e?.target) {
-        attachControlsToObject(e.target);
-      }
-      refreshSelectedInfo();
-      saveHistory();
-    });
-
-    let lastTapTime = 0;
-    let lastTapTarget: any = null;
-
-    // Mouse / Pointer Down
+    // Mouse / Pointer handlers for shapes, lines, arrows, bezier, lasso, pan
     fc.on('mouse:down', (opt: any) => {
-      const rawEvt = opt.e as MouseEvent | TouchEvent;
+      const e = opt.e as MouseEvent | PointerEvent | TouchEvent;
+      // Ignore multi-touch pinch
+      if ('touches' in e && e.touches.length > 1) return;
 
-      clearEmptyLongPressTimer();
-      setCanvasPasteMenu(null);
-      setRotatingAngleHud(null);
+      const button = 'button' in e ? e.button : 0;
+      const isRightClick = button === 2 || opt.button === 3;
+      if (isRightClick) {
+        if ('pointerType' in e && e.pointerType === 'touch') return;
+        lastRightClickOpenAtRef.current = Date.now();
+        setIsToolbarOpen(true);
+        setActivePopover((prev) => {
+          const next = prev === 'shapes' ? null : 'shapes';
+          trackFunction('toggle_shapes_context_menu', 'ui', {
+            is_open: next === 'shapes',
+          });
+          return next;
+        });
+        return;
+      }
 
-      // Hide initial "Just draw" prompt immediately when user starts interacting
-      setIsCanvasEmpty(false);
-
-      // Close open tool popovers when user interacts with canvas, keeping sidebar visible until Eye is clicked
-      if (sidebarOpenRef.current) {
+      // Close open popover when clicking canvas to draw
+      if (activePopoverRef.current) {
         setActivePopover(null);
       }
 
-      // Middle mouse button or Space+Drag panning
-      if (
-        isSpaceHeldRef.current ||
-        ('button' in rawEvt && rawEvt.button === 1)
-      ) {
-        isPanningDragRef.current = true;
-        const clientX = 'clientX' in rawEvt ? rawEvt.clientX : 0;
-        const clientY = 'clientY' in rawEvt ? rawEvt.clientY : 0;
-        lastPanClientRef.current = { x: clientX, y: clientY };
+      const clientX = 'clientX' in e ? e.clientX : 0;
+      const clientY = 'clientY' in e ? e.clientY : 0;
+
+      if (button === 1 || spacePressedRef.current) {
+        isPanningRef.current = true;
+        panLastScreenRef.current = { x: clientX, y: clientY };
+        fc.selection = false;
         fc.defaultCursor = 'grabbing';
         return;
       }
 
-      if ('button' in rawEvt && rawEvt.button === 2) {
-        return;
-      }
-
-      if (isPinchingRef.current) return;
-
       const mode = activeModeRef.current;
+      if (mode === 'select' || mode === 'brush' || mode === 'eraser') return;
 
-      // Double-tap detection for touch IText editing
-      if (mode === 'select' && opt.target && opt.target.type === 'i-text') {
-        const now = Date.now();
-        if (lastTapTarget === opt.target && now - lastTapTime < 350) {
-          opt.target.enterEditing();
-          opt.target.selectAll();
-          lastTapTime = 0;
-          lastTapTarget = null;
+      const worldPt = fc.getPointer(e);
+
+      // Bezier active handle dragging (cp1, cp2, p1, p2)
+      if (mode === 'bezier' && bezierEditRef.current) {
+        const zoom = fc.getZoom() || 1;
+        const hitR = 20 / zoom;
+        const { p1, cp1, cp2, p2 } = bezierEditRef.current;
+        if (Math.hypot(worldPt.x - cp1.x, worldPt.y - cp1.y) <= hitR) {
+          bezierEditRef.current.draggingHandle = 'cp1';
           return;
         }
-        lastTapTime = now;
-        lastTapTarget = opt.target;
-      }
-
-      // If editing a Bezier curve:
-      if (bezierSessionRef.current) {
-        const session = bezierSessionRef.current;
-        const tObj = opt.target;
-        const isHandle =
-          tObj === session.h0 ||
-          tObj === session.hc1 ||
-          tObj === session.hc2 ||
-          tObj === session.h3;
-        if (isHandle) {
+        if (Math.hypot(worldPt.x - cp2.x, worldPt.y - cp2.y) <= hitR) {
+          bezierEditRef.current.draggingHandle = 'cp2';
           return;
         }
-        finalizeBezierSession(false);
-        if (mode !== 'bezier') return;
-      }
-
-      if (mode === 'select') {
-        const activeObj = fc.getActiveObject();
-        const pressedCorner = opt.transform?.corner || activeObj?.__corner;
-        const isCornerNode =
-          pressedCorner === 'tl' ||
-          pressedCorner === 'tr' ||
-          pressedCorner === 'bl' ||
-          pressedCorner === 'br';
-
-        if (activeObj && isObjectCornerRoundable(activeObj) && isCornerNode) {
-          const startPt = getCanvasRelativePoint(rawEvt);
-          const rect = getObjectScreenRect(activeObj);
-          const centerX = rect.left + rect.width / 2;
-          const centerY = rect.top + rect.height / 2;
-          const dx = centerX - startPt.x;
-          const dy = centerY - startPt.y;
-          const len = Math.hypot(dx, dy) || 1;
-          const dirX = dx / len;
-          const dirY = dy / len;
-          const maxTravel = Math.max(26, Math.min(rect.width, rect.height) * 0.42);
-
-          if (cornerRoundingArmedObjRef.current === activeObj) {
-            // Already armed via long-tap: drag immediately rounds corners!
-            fc._currentTransform = null;
-            const startRatio = getObjectCornerRoundRatio(activeObj) ?? 0;
-            cornerRoundingDragRef.current = {
-              obj: activeObj,
-              startPt,
-              dirX,
-              dirY,
-              maxTravel,
-              startRatio,
-              movedPx: 0,
-            };
-            setCornerRoundHud({ percent: Math.round(startRatio * 100), armed: true });
-            return;
-          }
-
-          clearCornerLongPressTimer();
-          const preLeft = activeObj.left;
-          const preTop = activeObj.top;
-          const preScaleX = activeObj.scaleX;
-          const preScaleY = activeObj.scaleY;
-
-          pendingCornerPressRef.current = {
-            obj: activeObj,
-            startPt,
-            dirX,
-            dirY,
-            maxTravel,
-            preLeft,
-            preTop,
-            preScaleX,
-            preScaleY,
-          };
-
-          longPressCornerTimerRef.current = window.setTimeout(() => {
-            const pending = pendingCornerPressRef.current;
-            longPressCornerTimerRef.current = null;
-            pendingCornerPressRef.current = null;
-            if (!pending || isPinchingRef.current) return;
-
-            // Cancel normal scale transform and restore exact pre-press bounds
-            fc._currentTransform = null;
-            pending.obj.set({
-              left: pending.preLeft,
-              top: pending.preTop,
-              scaleX: pending.preScaleX,
-              scaleY: pending.preScaleY,
-              cornerColor: '#F59E0B',
-              borderColor: '#F59E0B',
-            });
-            pending.obj.setCoords();
-
-            if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
-              navigator.vibrate(18);
-            }
-
-            const startRatio = getObjectCornerRoundRatio(pending.obj) ?? 0;
-            cornerRoundingArmedObjRef.current = pending.obj;
-            cornerRoundingDragRef.current = {
-              obj: pending.obj,
-              startPt: pending.startPt,
-              dirX: pending.dirX,
-              dirY: pending.dirY,
-              maxTravel: pending.maxTravel,
-              startRatio,
-              movedPx: 0,
-            };
-            setCornerRoundHud({ percent: Math.round(startRatio * 100), armed: true });
-            fc.requestRenderAll();
-            refreshSelectedInfo();
-          }, 360);
+        if (Math.hypot(worldPt.x - p1.x, worldPt.y - p1.y) <= hitR) {
+          bezierEditRef.current.draggingHandle = 'p1';
           return;
         }
-
-        if (cornerRoundingArmedObjRef.current) {
-          disarmCornerRounding();
+        if (Math.hypot(worldPt.x - p2.x, worldPt.y - p2.y) <= hitR) {
+          bezierEditRef.current.draggingHandle = 'p2';
+          return;
         }
-        if (opt.target && !opt.target.excludeFromExport && !opt.target.isEraserPath) {
-          bringTargetToFrontLayer(opt.target);
-        } else if (!opt.transform && !fc._currentTransform) {
-          const clientPt = getRawClientPoint(rawEvt);
-          const worldPt = fc.getPointer(rawEvt);
-          emptyLongPressTriggeredRef.current = false;
-          emptyLongPressStartRef.current = clientPt;
-          emptyLongPressTimerRef.current = window.setTimeout(() => {
-            emptyLongPressTimerRef.current = null;
-            emptyLongPressStartRef.current = null;
-            if (
-              isPinchingRef.current ||
-              isPanningDragRef.current ||
-              activeModeRef.current !== 'select'
-            ) {
-              return;
-            }
-            emptyLongPressTriggeredRef.current = true;
-            window.setTimeout(() => {
-              emptyLongPressTriggeredRef.current = false;
-            }, 600);
-
-            fc._groupSelector = null;
-            fc.discardActiveObject();
-            fc.requestRenderAll();
-            refreshSelectedInfo();
-
-            if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
-              navigator.vibrate(18);
-            }
-            setCanvasPasteMenu({
-              clientX: clientPt.clientX,
-              clientY: clientPt.clientY,
-              worldX: worldPt.x,
-              worldY: worldPt.y,
-            });
-          }, 450);
-        }
-        return;
+        // Clicked away: leave saved curve on canvas and start a new one
+        bezierEditRef.current = null;
+        snapIndicatorRef.current = null;
       }
 
       if (mode === 'lasso') {
-        const pt = fc.getPointer(rawEvt);
         isDrawingLassoRef.current = true;
-        lassoPointsRef.current = [{ x: pt.x, y: pt.y }];
+        lassoPointsRef.current = [{ x: worldPt.x, y: worldPt.y }];
         fc.requestRenderAll();
         return;
       }
 
-      if (mode === 'brush' || mode === 'eraser') {
-        return;
-      }
-
-      // Start drawing a shape / line / bezier / arrow
-      const pt = fc.getPointer(rawEvt);
-      const zoom = fc.getZoom() || 1;
-      const rawWidth = strokeRef.current.width;
-      const isClosedShapeMode =
-        mode === 'rect' ||
-        mode === 'triangle' ||
-        mode === 'ellipse' ||
-        mode === 'star' ||
-        (mode === 'arrow' &&
-          (arrowVariantRef.current === 'filled' ||
-            arrowVariantRef.current === 'filledDouble'));
-      const shapeStrokeWidth =
-        isClosedShapeMode && fillRef.current.mode !== 'none'
-          ? rawWidth
-          : Math.max(1, rawWidth);
-      const dash = getScaledDashArray(strokeRef.current.pattern, shapeStrokeWidth);
-      const effectiveStroke = applyColorOpacity(
-        strokeRef.current.color,
-        strokeRef.current.opacity
-      );
-      const fillVal = buildFillValue(fillRef.current);
-      const fillMetaCopy = { ...fillRef.current };
-      const commonStroke = {
-        stroke: shapeStrokeWidth > 0 ? effectiveStroke : null,
-        strokeColorHex: strokeRef.current.color,
-        strokeOpacity: strokeRef.current.opacity,
-        strokeWidth: shapeStrokeWidth,
-        strokeDashArray: dash || undefined,
-        strokePattern: strokeRef.current.pattern,
-        doubleLine: strokeRef.current.doubleLine,
-        strokeUniform: true,
-        strokeLineCap: 'round',
-        strokeLineJoin: 'round',
-        selectable: false,
-        evented: false,
-      };
-      const closedHitProps = {
-        perPixelTargetFind: false,
-        targetFindTolerance: 16,
-      };
-
-      // If in active multi-segment contour session for Line tool:
-      if (mode === 'line' && contourSessionRef.current) {
-        const cSess = contourSessionRef.current;
-        const extraFirst = cSess.points.length >= 3 ? cSess.points[0] : null;
-        const snap = snapEnabledRef.current
-          ? findNearestEndpointSnap(fc, pt, [cSess.pathObj], zoom, extraFirst)
-          : extraFirst &&
-              Math.hypot(pt.x - extraFirst.x, pt.y - extraFirst.y) <=
-                16 / Math.max(0.15, zoom)
-            ? {
-                point: extraFirst,
-                targetObj: null,
-                targetEnd: 'self' as const,
-                distance: 0,
-              }
-            : null;
-        const snappedPt = snap ? snap.point : pt;
-        if (snap && snap.targetEnd === 'self' && cSess.points.length >= 3) {
-          finalizeContourSession(false);
-          return;
-        }
-        const prevLast = cSess.points[cSess.points.length - 1];
-        isDrawingShapeRef.current = true;
-        shapeStartRef.current = { x: prevLast.x, y: prevLast.y };
-        pendingLineStartSnapRef.current = null;
-        pendingLineEndSnapRef.current = snap;
-        const segPreview = new fabric.Line(
-          [prevLast.x, prevLast.y, snappedPt.x, snappedPt.y],
-          {
-            ...commonStroke,
-            stroke: rawWidth > 0 ? effectiveStroke : '#3B82F6',
-            strokeWidth: rawWidth > 0 ? rawWidth : 1.5,
+      if (mode === 'polyline' || (mode === 'line' && closedContourRef.current)) {
+        const pts = contourPointsRef.current;
+        const zoom = fc.getZoom() || 1;
+        let nextPt: Point2D = { x: worldPt.x, y: worldPt.y };
+        if (snapEnabledRef.current) {
+          const snap = findNearestEndpointSnap(
+            fc,
+            nextPt,
+            [],
+            zoom,
+            pts.length >= 3 ? pts[0] : null,
+            true
+          );
+          if (snap) {
+            nextPt = snap.point;
+            snapIndicatorRef.current = snap.point;
           }
-        );
-        tempShapeRef.current = segPreview;
-        fc.add(segPreview);
+        }
+        if (pts.length >= 3) {
+          const dFirst = Math.hypot(nextPt.x - pts[0].x, nextPt.y - pts[0].y);
+          if (dFirst <= 18 / zoom) {
+            commitContourPoints(true);
+            return;
+          }
+        }
+        if (pts.length > 0) {
+          const last = pts[pts.length - 1];
+          if (Math.hypot(nextPt.x - last.x, nextPt.y - last.y) < 3 / zoom) {
+            return;
+          }
+        }
+        polylineHoverPtRef.current = nextPt;
+        setContourPoints((prev) => [...prev, nextPt]);
         fc.requestRenderAll();
         return;
       }
 
-      let startPt = { x: pt.x, y: pt.y };
-      pendingLineStartSnapRef.current = null;
-      pendingLineEndSnapRef.current = null;
-      if ((mode === 'line' || mode === 'bezier') && snapEnabledRef.current) {
-        const sSnap = findNearestEndpointSnap(fc, pt, [], zoom);
-        if (sSnap) {
-          startPt = { x: sSnap.point.x, y: sSnap.point.y };
-          pendingLineStartSnapRef.current = sSnap;
-        }
-      }
+      const st = strokeRef.current;
+      const fl = fillRef.current;
+      const sw = st.width;
+      const strokeRgba = sw > 0 ? applyColorOpacity(st.color, st.opacity) : null;
+      const dash = getScaledDashArray(st.pattern, Math.max(1, sw));
 
-      isDrawingShapeRef.current = true;
-      shapeStartRef.current = startPt;
-
-      let shape: any = null;
       if (mode === 'line' || mode === 'bezier') {
-        shape = new fabric.Line([startPt.x, startPt.y, startPt.x, startPt.y], {
-          ...commonStroke,
-          originX: 'center',
-          originY: 'center',
-          strokeDashArray: mode === 'bezier' ? [6, 4] : dash || undefined,
-          doubleLine: mode === 'bezier' ? false : strokeRef.current.doubleLine,
-        });
-      } else if (mode === 'rect') {
-        shape = new fabric.Rect({
-          left: startPt.x,
-          top: startPt.y,
-          width: 0,
-          height: 0,
-          fill: fillVal,
-          fillMeta: fillMetaCopy,
-          isGridRect: rectGridRef.current.enabled,
-          gridRows: rectGridRef.current.rows,
-          gridCols: rectGridRef.current.cols,
-          ...commonStroke,
-          ...closedHitProps,
-        });
-      } else if (mode === 'triangle') {
-        shape = new fabric.Triangle({
-          left: startPt.x,
-          top: startPt.y,
-          width: 0,
-          height: 0,
-          fill: fillVal,
-          fillMeta: fillMetaCopy,
-          ...commonStroke,
-          ...closedHitProps,
-        });
-      } else if (mode === 'ellipse') {
-        shape = new fabric.Ellipse({
-          left: startPt.x,
-          top: startPt.y,
-          rx: 0,
-          ry: 0,
-          fill: fillVal,
-          fillMeta: fillMetaCopy,
-          ...commonStroke,
-          ...closedHitProps,
-        });
-      } else if (mode === 'star') {
-        shape = new fabric.Polygon(
-          buildPolygonPoints(polygonVariantRef.current, startPt.x, startPt.y, 2, 2),
-          {
-            fill: fillVal,
-            fillMeta: fillMetaCopy,
-            ...commonStroke,
-            ...closedHitProps,
+        let startPt = { x: worldPt.x, y: worldPt.y };
+        if (snapEnabledRef.current) {
+          const snap = findNearestEndpointSnap(fc, startPt, [], fc.getZoom() || 1, null, true);
+          if (snap) {
+            startPt = snap.point;
+            snapIndicatorRef.current = snap.point;
           }
-        );
-      } else if (mode === 'arrow') {
-        const curVariant = arrowVariantRef.current;
-        const isBlockArrow = curVariant === 'filled' || curVariant === 'filledDouble';
-        shape = createArrowObject(
-          startPt.x,
-          startPt.y,
-          startPt.x + 1,
-          startPt.y + 1,
-          effectiveStroke,
-          shapeStrokeWidth,
+        }
+        const line = new fabric.Line([startPt.x, startPt.y, startPt.x, startPt.y], {
+          stroke: strokeRgba || applyColorOpacity(st.color, st.opacity),
+          strokeColorHex: st.color,
+          strokeOpacity: st.opacity,
+          strokeWidth: Math.max(1, sw),
+          strokeDashArray: dash || undefined,
+          strokePattern: st.pattern,
+          doubleLine: st.doubleLine,
+          strokeUniform: true,
+          strokeLineCap: 'round',
+          perPixelTargetFind: true,
+          targetFindTolerance: 14,
+          selectable: false,
+          evented: false,
+          cornerColor: '#2563EB',
+          borderColor: '#2563EB',
+        });
+        fc.add(line);
+        drawingShapeRef.current = { obj: line, startX: startPt.x, startY: startPt.y };
+        return;
+      }
+
+      if (mode === 'arrow') {
+        const arrow = createArrowObject(
+          worldPt.x,
+          worldPt.y,
+          worldPt.x + 2,
+          worldPt.y,
+          st.color,
+          sw,
           dash,
-          strokeRef.current.doubleLine,
-          curVariant,
-          isBlockArrow ? fillVal : undefined,
+          st.doubleLine,
+          arrowVariantRef.current,
+          buildFillValue(fl),
           {
             selectable: false,
             evented: false,
-            strokeColorHex: strokeRef.current.color,
-            strokeOpacity: strokeRef.current.opacity,
-            strokePattern: strokeRef.current.pattern,
-            fillMeta: isBlockArrow ? fillMetaCopy : undefined,
+            strokeColorHex: st.color,
+            strokeOpacity: st.opacity,
+            strokePattern: st.pattern,
+            fillMeta: { ...fl },
           }
         );
-      }
-
-      if (shape) {
-        tempShapeRef.current = shape;
-        fc.add(shape);
-        fc.requestRenderAll();
-      }
-    });
-
-    // Mouse / Pointer Move
-    fc.on('mouse:move', (opt: any) => {
-      const rawEvt = opt.e as MouseEvent | TouchEvent;
-
-      if (isPanningDragRef.current) {
-        const clientX = 'clientX' in rawEvt ? rawEvt.clientX : 0;
-        const clientY = 'clientY' in rawEvt ? rawEvt.clientY : 0;
-        const dx = clientX - lastPanClientRef.current.x;
-        const dy = clientY - lastPanClientRef.current.y;
-        lastPanClientRef.current = { x: clientX, y: clientY };
-        fc.relativePan(new fabric.Point(dx, dy));
-        refreshSelectedInfo();
+        fc.add(arrow);
+        drawingShapeRef.current = { obj: arrow, startX: worldPt.x, startY: worldPt.y };
         return;
       }
 
-      if (cornerRoundingDragRef.current) {
-        if (fc._currentTransform) {
-          fc._currentTransform = null;
-        }
-        const drag = cornerRoundingDragRef.current;
-        const currPt = getCanvasRelativePoint(rawEvt);
-        const dragDist = Math.hypot(currPt.x - drag.startPt.x, currPt.y - drag.startPt.y);
-        drag.movedPx = Math.max(drag.movedPx, dragDist);
-
-        const inwardDelta =
-          (currPt.x - drag.startPt.x) * drag.dirX +
-          (currPt.y - drag.startPt.y) * drag.dirY;
-        const nextRatio = Math.max(
-          0,
-          Math.min(1, drag.startRatio + inwardDelta / drag.maxTravel)
-        );
-        applyCornerRoundingToObject(drag.obj, nextRatio);
-        fc.requestRenderAll();
-        refreshSelectedInfo();
-        setCornerRoundHud({ percent: Math.round(nextRatio * 100), armed: true });
+      if (mode === 'ellipse') {
+        const ellipse = new fabric.Ellipse({
+          left: worldPt.x,
+          top: worldPt.y,
+          rx: 1,
+          ry: 1,
+          fill: buildFillValue(fl, 10, 10),
+          fillMeta: { ...fl },
+          stroke: strokeRgba,
+          strokeColorHex: st.color,
+          strokeOpacity: st.opacity,
+          strokeWidth: sw,
+          strokeDashArray: dash || undefined,
+          strokePattern: st.pattern,
+          doubleLine: st.doubleLine,
+          strokeUniform: true,
+          originX: 'left',
+          originY: 'top',
+          selectable: false,
+          evented: false,
+          cornerColor: '#2563EB',
+          borderColor: '#2563EB',
+        });
+        fc.add(ellipse);
+        drawingShapeRef.current = { obj: ellipse, startX: worldPt.x, startY: worldPt.y };
         return;
       }
 
-      if (pendingCornerPressRef.current) {
-        const currPt = getCanvasRelativePoint(rawEvt);
-        const pStart = pendingCornerPressRef.current.startPt;
-        if (Math.hypot(currPt.x - pStart.x, currPt.y - pStart.y) > 8) {
-          clearCornerLongPressTimer();
-        }
-      }
-
-      if (emptyLongPressStartRef.current) {
-        const currClient = getRawClientPoint(rawEvt);
-        if (
-          Math.hypot(
-            currClient.clientX - emptyLongPressStartRef.current.clientX,
-            currClient.clientY - emptyLongPressStartRef.current.clientY
-          ) > 8
-        ) {
-          clearEmptyLongPressTimer();
-        }
-      }
-
-      if (isDrawingLassoRef.current && !isPinchingRef.current) {
-        const pt = fc.getPointer(rawEvt);
-        const pts = lassoPointsRef.current;
-        const zoom = fc.getZoom() || 1;
-        const minStep = 3 / Math.max(0.2, zoom);
-        const last = pts[pts.length - 1];
-        if (!last || Math.hypot(pt.x - last.x, pt.y - last.y) >= minStep) {
-          pts.push({ x: pt.x, y: pt.y });
-          fc.requestRenderAll();
-        }
-        return;
-      }
-
-      if (!isDrawingShapeRef.current || !tempShapeRef.current || isPinchingRef.current) {
-        const mode = activeModeRef.current;
-        if (!isPinchingRef.current && (mode === 'line' || mode === 'bezier')) {
-          const hoverPt = fc.getPointer(rawEvt);
-          const zoom = fc.getZoom() || 1;
-          const cSess = contourSessionRef.current;
-          const extraFirst = cSess && cSess.points.length >= 3 ? cSess.points[0] : null;
-          const snap = snapEnabledRef.current
-            ? findNearestEndpointSnap(
-                fc,
-                hoverPt,
-                cSess ? [cSess.pathObj] : [],
-                zoom,
-                extraFirst
-              )
-            : extraFirst &&
-                Math.hypot(hoverPt.x - extraFirst.x, hoverPt.y - extraFirst.y) <=
-                  16 / Math.max(0.15, zoom)
-              ? {
-                  point: extraFirst,
-                  targetObj: null,
-                  targetEnd: 'self' as const,
-                  distance: 0,
-                }
-              : null;
-          const nextSnapPt = snap ? snap.point : null;
-          const prevSnap = snapIndicatorRef.current;
-          const changed =
-            (prevSnap === null) !== (nextSnapPt === null) ||
-            (prevSnap &&
-              nextSnapPt &&
-              (prevSnap.x !== nextSnapPt.x || prevSnap.y !== nextSnapPt.y));
-          snapIndicatorRef.current = nextSnapPt;
-          if (changed) {
-            fc.requestRenderAll();
-          }
-        } else if (snapIndicatorRef.current && !fc._currentTransform) {
-          snapIndicatorRef.current = null;
-          fc.requestRenderAll();
-        }
-        return;
-      }
-
-      const pt = fc.getPointer(rawEvt);
-      const sx = shapeStartRef.current.x;
-      const sy = shapeStartRef.current.y;
-      let ex = pt.x;
-      let ey = pt.y;
-
-      const shift = 'shiftKey' in rawEvt && rawEvt.shiftKey;
-      const mode = activeModeRef.current;
-
-      if (
-        shift &&
-        (mode === 'rect' || mode === 'ellipse' || mode === 'triangle' || mode === 'star')
-      ) {
-        const dx = ex - sx;
-        const dy = ey - sy;
-        const side = Math.max(Math.abs(dx), Math.abs(dy));
-        ex = sx + Math.sign(dx || 1) * side;
-        ey = sy + Math.sign(dy || 1) * side;
-      } else if (shift && (mode === 'line' || mode === 'arrow' || mode === 'bezier')) {
-        const dx = ex - sx;
-        const dy = ey - sy;
-        const angle = Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) * (Math.PI / 4);
-        const dist = Math.hypot(dx, dy);
-        ex = sx + Math.cos(angle) * dist;
-        ey = sy + Math.sin(angle) * dist;
-      }
-
-      const shape = tempShapeRef.current;
-
-      if (mode === 'line' || mode === 'bezier') {
-        const zoom = fc.getZoom() || 1;
-        const cSess = contourSessionRef.current;
-        const extraFirst = cSess && cSess.points.length >= 3 ? cSess.points[0] : null;
-        const exclude = cSess ? [shape, cSess.pathObj] : [shape];
-        const endSnap = snapEnabledRef.current
-          ? findNearestEndpointSnap(fc, { x: ex, y: ey }, exclude, zoom, extraFirst)
-          : extraFirst &&
-              Math.hypot(ex - extraFirst.x, ey - extraFirst.y) <=
-                16 / Math.max(0.15, zoom)
-            ? {
-                point: extraFirst,
-                targetObj: null,
-                targetEnd: 'self' as const,
-                distance: 0,
-              }
-            : null;
-        if (endSnap) {
-          ex = endSnap.point.x;
-          ey = endSnap.point.y;
-          snapIndicatorRef.current = endSnap.point;
-          pendingLineEndSnapRef.current = endSnap;
+      if (mode === 'rect') {
+        if (rectGridRef.current.enabled) {
+          const grp = createGridRectGroup(
+            fabric,
+            worldPt.x,
+            worldPt.y,
+            10,
+            10,
+            rectGridRef.current.rows,
+            rectGridRef.current.cols,
+            st,
+            fl
+          );
+          grp.set({ selectable: false, evented: false });
+          fc.add(grp);
+          drawingShapeRef.current = { obj: grp, startX: worldPt.x, startY: worldPt.y };
         } else {
-          snapIndicatorRef.current = null;
-          pendingLineEndSnapRef.current = null;
-        }
-      }
-
-      const left = Math.min(sx, ex);
-      const top = Math.min(sy, ey);
-      const width = Math.abs(ex - sx);
-      const height = Math.abs(ey - sy);
-      const effectiveStroke = applyColorOpacity(
-        strokeRef.current.color,
-        strokeRef.current.opacity
-      );
-
-      if (mode === 'line' || mode === 'bezier') {
-        shape.set({ x2: ex, y2: ey });
-        if (contourSessionRef.current?.previewLine) {
-          const firstPt = contourSessionRef.current.points[0];
-          contourSessionRef.current.previewLine.set({
-            x1: ex,
-            y1: ey,
-            x2: firstPt.x,
-            y2: firstPt.y,
-          });
-        }
-      } else if (mode === 'rect' || mode === 'triangle') {
-        shape.set({ left, top, width, height });
-        if (fillRef.current.mode === 'photo') {
-          applyFillToObject(shape, fillRef.current, fc);
-        }
-      } else if (mode === 'ellipse') {
-        shape.set({ left, top, rx: width / 2, ry: height / 2 });
-        if (fillRef.current.mode === 'photo') {
-          applyFillToObject(shape, fillRef.current, fc);
-        }
-      } else if (mode === 'star') {
-        const cx = left + width / 2;
-        const cy = top + height / 2;
-        const rx = Math.max(2, width / 2);
-        const ry = Math.max(2, height / 2);
-        const polyStrokeWidth =
-          fillRef.current.mode !== 'none'
-            ? strokeRef.current.width
-            : Math.max(1, strokeRef.current.width);
-        const dash = getScaledDashArray(strokeRef.current.pattern, polyStrokeWidth);
-        const fillVal = buildFillValue(fillRef.current);
-        fc.remove(shape);
-        const nextPoly = new fabric.Polygon(
-          buildPolygonPoints(polygonVariantRef.current, cx, cy, rx, ry),
-          {
-            fill: fillVal,
-            fillMeta: { ...fillRef.current },
-            stroke: polyStrokeWidth > 0 ? effectiveStroke : null,
-            strokeColorHex: strokeRef.current.color,
-            strokeOpacity: strokeRef.current.opacity,
-            strokeWidth: polyStrokeWidth,
+          const rect = new fabric.Rect({
+            left: worldPt.x,
+            top: worldPt.y,
+            width: 1,
+            height: 1,
+            fill: buildFillValue(fl, 10, 10),
+            fillMeta: { ...fl },
+            stroke: strokeRgba,
+            strokeColorHex: st.color,
+            strokeOpacity: st.opacity,
+            strokeWidth: sw,
             strokeDashArray: dash || undefined,
-            strokePattern: strokeRef.current.pattern,
-            doubleLine: strokeRef.current.doubleLine,
+            strokePattern: st.pattern,
+            doubleLine: st.doubleLine,
             strokeUniform: true,
-            strokeLineJoin: 'round',
-            perPixelTargetFind: false,
-            targetFindTolerance: 16,
+            originX: 'left',
+            originY: 'top',
             selectable: false,
             evented: false,
-          }
-        );
-        if (fillRef.current.mode === 'photo') {
-          applyFillToObject(nextPoly, fillRef.current, fc);
-        }
-        tempShapeRef.current = nextPoly;
-        fc.add(nextPoly);
-      } else if (mode === 'arrow') {
-        const curVariant = arrowVariantRef.current;
-        const isBlockArrow = curVariant === 'filled' || curVariant === 'filledDouble';
-        const arrowStrokeWidth =
-          isBlockArrow && fillRef.current.mode !== 'none'
-            ? strokeRef.current.width
-            : Math.max(1, strokeRef.current.width);
-        const dash = getScaledDashArray(strokeRef.current.pattern, arrowStrokeWidth);
-        const arrowFillVal = isBlockArrow ? buildFillValue(fillRef.current) : undefined;
-        fc.remove(shape);
-        const nextArrow = createArrowObject(
-          sx,
-          sy,
-          ex,
-          ey,
-          effectiveStroke,
-          arrowStrokeWidth,
-          dash,
-          strokeRef.current.doubleLine,
-          curVariant,
-          arrowFillVal,
-          {
-            selectable: false,
-            evented: false,
-            strokeColorHex: strokeRef.current.color,
-            strokeOpacity: strokeRef.current.opacity,
-            strokePattern: strokeRef.current.pattern,
-            fillMeta: isBlockArrow ? { ...fillRef.current } : undefined,
-          }
-        );
-        tempShapeRef.current = nextArrow;
-        fc.add(nextArrow);
-      }
-
-      fc.requestRenderAll();
-    });
-
-    // Mouse / Pointer Up
-    fc.on('mouse:up', (opt: any) => {
-      clearCornerLongPressTimer();
-      clearEmptyLongPressTimer();
-      setRotatingAngleHud(null);
-      snapIndicatorRef.current = null;
-
-      if (cornerRoundingDragRef.current) {
-        const drag = cornerRoundingDragRef.current;
-        cornerRoundingDragRef.current = null;
-        if (drag.movedPx >= 6) {
-          drag.obj.set({
             cornerColor: '#2563EB',
             borderColor: '#2563EB',
           });
-          drag.obj.setCoords();
-          cornerRoundingArmedObjRef.current = null;
-          setCornerRoundHud(null);
-          fc.requestRenderAll();
-          refreshSelectedInfo();
-          saveHistory();
+          fc.add(rect);
+          drawingShapeRef.current = { obj: rect, startX: worldPt.x, startY: worldPt.y };
+        }
+        return;
+      }
+
+      if (mode === 'triangle') {
+        const tri = new fabric.Triangle({
+          left: worldPt.x,
+          top: worldPt.y,
+          width: 1,
+          height: 1,
+          fill: buildFillValue(fl, 10, 10),
+          fillMeta: { ...fl },
+          stroke: strokeRgba,
+          strokeColorHex: st.color,
+          strokeOpacity: st.opacity,
+          strokeWidth: sw,
+          strokeDashArray: dash || undefined,
+          strokePattern: st.pattern,
+          doubleLine: st.doubleLine,
+          strokeUniform: true,
+          originX: 'left',
+          originY: 'top',
+          selectable: false,
+          evented: false,
+          cornerColor: '#2563EB',
+          borderColor: '#2563EB',
+        });
+        fc.add(tri);
+        drawingShapeRef.current = { obj: tri, startX: worldPt.x, startY: worldPt.y };
+        return;
+      }
+
+      if (mode === 'star') {
+        const pts = buildPolygonPoints(polygonVariantRef.current, 0, 0, 1, 1);
+        const poly = new fabric.Polygon(pts, {
+          left: worldPt.x,
+          top: worldPt.y,
+          fill: buildFillValue(fl, 10, 10),
+          fillMeta: { ...fl },
+          stroke: strokeRgba,
+          strokeColorHex: st.color,
+          strokeOpacity: st.opacity,
+          strokeWidth: sw,
+          strokeDashArray: dash || undefined,
+          strokePattern: st.pattern,
+          doubleLine: st.doubleLine,
+          strokeUniform: true,
+          strokeLineJoin: 'round',
+          isPolygonMorphable: true,
+          polygonVariant: polygonVariantRef.current,
+          originX: 'center',
+          originY: 'center',
+          selectable: false,
+          evented: false,
+          cornerColor: '#2563EB',
+          borderColor: '#2563EB',
+        });
+        fc.add(poly);
+        drawingShapeRef.current = { obj: poly, startX: worldPt.x, startY: worldPt.y };
+      }
+    });
+
+    fc.on('mouse:move', (opt: any) => {
+      const e = opt.e as MouseEvent | PointerEvent;
+      if (isPanningRef.current && panLastScreenRef.current) {
+        const cx = 'clientX' in e ? e.clientX : panLastScreenRef.current.x;
+        const cy = 'clientY' in e ? e.clientY : panLastScreenRef.current.y;
+        const dx = cx - panLastScreenRef.current.x;
+        const dy = cy - panLastScreenRef.current.y;
+        panLastScreenRef.current = { x: cx, y: cy };
+        fc.relativePan(new fabric.Point(dx, dy));
+        redrawBackground();
+        return;
+      }
+
+      const mode = activeModeRef.current;
+      const worldPt = fc.getPointer(e);
+
+      const dragHandle = bezierEditRef.current?.draggingHandle;
+      if (mode === 'bezier' && dragHandle && bezierEditRef.current) {
+        const edit = bezierEditRef.current;
+        const zoom = fc.getZoom() || 1;
+        let nextPt: Point2D = { x: worldPt.x, y: worldPt.y };
+
+        if (dragHandle === 'p1' || dragHandle === 'p2') {
+          if (snapEnabledRef.current) {
+            const snap = findNearestEndpointSnap(
+              fc,
+              nextPt,
+              [edit.pathObj],
+              zoom,
+              dragHandle === 'p1' ? edit.p2 : edit.p1,
+              true
+            );
+            if (snap) {
+              nextPt = snap.point;
+              snapIndicatorRef.current = snap.point;
+            } else {
+              snapIndicatorRef.current = null;
+            }
+          } else {
+            snapIndicatorRef.current = null;
+          }
+
+          if (dragHandle === 'p1') {
+            const dx = nextPt.x - edit.p1.x;
+            const dy = nextPt.y - edit.p1.y;
+            edit.p1 = nextPt;
+            edit.cp1 = { x: edit.cp1.x + dx, y: edit.cp1.y + dy };
+          } else {
+            const dx = nextPt.x - edit.p2.x;
+            const dy = nextPt.y - edit.p2.y;
+            edit.p2 = nextPt;
+            edit.cp2 = { x: edit.cp2.x + dx, y: edit.cp2.y + dy };
+          }
         } else {
-          // User released right after long-tap activation: keep corner handles armed
-          const pct = Math.round((getObjectCornerRoundRatio(drag.obj) ?? 0) * 100);
-          setCornerRoundHud({ percent: pct, armed: true });
+          snapIndicatorRef.current = null;
+          edit[dragHandle] = nextPt;
+        }
+
+        const isClosed = Boolean(edit.pathObj.isClosedContour || hasPathCloseCommand(edit.pathObj));
+        const cmds = segmentsToPathCommands(
+          [
+            {
+              type: 'C',
+              from: edit.p1,
+              cp1: edit.cp1,
+              cp2: edit.cp2,
+              to: edit.p2,
+            },
+          ],
+          isClosed
+        );
+        edit.pathObj.set({
+          isBezierCurve: true,
+          scaleX: 1,
+          scaleY: 1,
+          angle: 0,
+          flipX: false,
+          flipY: false,
+          skewX: 0,
+          skewY: 0,
+          originX: 'left',
+          originY: 'top',
+          dirty: true,
+        });
+        if (typeof edit.pathObj._setPath === 'function') {
+          edit.pathObj._setPath(cmds);
+        } else {
+          edit.pathObj.set({ path: cmds });
+        }
+        edit.pathObj.basePathCommands = cmds.map((c: any[]) => [...c]);
+        edit.pathObj.baseWidth = edit.pathObj.width;
+        edit.pathObj.baseHeight = edit.pathObj.height;
+        edit.pathObj.basePathOffset = {
+          x: edit.pathObj.pathOffset?.x || 0,
+          y: edit.pathObj.pathOffset?.y || 0,
+        };
+        if (edit.pathObj.fillMeta?.mode === 'photo') {
+          refreshObjectPhotoFill(edit.pathObj, fc);
+        }
+        edit.pathObj.set({ dirty: true });
+        edit.pathObj.setCoords();
+        fc.requestRenderAll();
+        return;
+      }
+
+      if (
+        (mode === 'polyline' || (mode === 'line' && closedContourRef.current)) &&
+        contourPointsRef.current.length > 0
+      ) {
+        const pts = contourPointsRef.current;
+        const zoom = fc.getZoom() || 1;
+        let hoverPt: Point2D = { x: worldPt.x, y: worldPt.y };
+        if (snapEnabledRef.current) {
+          const snap = findNearestEndpointSnap(
+            fc,
+            hoverPt,
+            [],
+            zoom,
+            pts.length >= 3 ? pts[0] : null,
+            true
+          );
+          if (snap) {
+            hoverPt = snap.point;
+            snapIndicatorRef.current = snap.point;
+          } else {
+            snapIndicatorRef.current = null;
+          }
+        } else {
+          snapIndicatorRef.current = null;
+        }
+        polylineHoverPtRef.current = hoverPt;
+        fc.requestRenderAll();
+        return;
+      }
+
+      if (mode === 'lasso' && isDrawingLassoRef.current) {
+        const pts = lassoPointsRef.current;
+        const last = pts[pts.length - 1];
+        if (!last || Math.hypot(worldPt.x - last.x, worldPt.y - last.y) >= 3) {
+          pts.push({ x: worldPt.x, y: worldPt.y });
         }
         return;
       }
 
-      if (isPanningDragRef.current) {
-        isPanningDragRef.current = false;
-        fc.defaultCursor = isSpaceHeldRef.current ? 'grab' : 'default';
+      const ds = drawingShapeRef.current;
+      if (!ds) return;
+      const { obj, startX, startY } = ds;
+
+      if (mode === 'line' || mode === 'bezier') {
+        let endPt = { x: worldPt.x, y: worldPt.y };
+        if (snapEnabledRef.current) {
+          const snap = findNearestEndpointSnap(
+            fc,
+            endPt,
+            [obj],
+            fc.getZoom() || 1,
+            null,
+            true
+          );
+          if (snap) {
+            endPt = snap.point;
+            snapIndicatorRef.current = snap.point;
+          } else {
+            snapIndicatorRef.current = null;
+          }
+        }
+        obj.set({ x2: endPt.x, y2: endPt.y });
+        obj.setCoords();
+        fc.requestRenderAll();
         return;
       }
 
-      if (isDrawingLassoRef.current) {
+      if (mode === 'arrow') {
+        const st = strokeRef.current;
+        const fl = fillRef.current;
+        const dash = getScaledDashArray(st.pattern, Math.max(1, st.width));
+        const nextArrow = createArrowObject(
+          startX,
+          startY,
+          worldPt.x,
+          worldPt.y,
+          st.color,
+          st.width,
+          dash,
+          st.doubleLine,
+          arrowVariantRef.current,
+          buildFillValue(fl),
+          {
+            selectable: false,
+            evented: false,
+            strokeColorHex: st.color,
+            strokeOpacity: st.opacity,
+            strokePattern: st.pattern,
+            fillMeta: { ...fl },
+          }
+        );
+        fc.remove(obj);
+        fc.add(nextArrow);
+        ds.obj = nextArrow;
+        fc.requestRenderAll();
+        return;
+      }
+
+      const left = Math.min(startX, worldPt.x);
+      const top = Math.min(startY, worldPt.y);
+      const width = Math.max(2, Math.abs(worldPt.x - startX));
+      const height = Math.max(2, Math.abs(worldPt.y - startY));
+
+      if (mode === 'ellipse') {
+        obj.set({ left, top, rx: width / 2, ry: height / 2 });
+        obj.setCoords();
+      } else if (mode === 'rect') {
+        if (rectGridRef.current.enabled) {
+          const nextGrp = createGridRectGroup(
+            fabric,
+            left,
+            top,
+            width,
+            height,
+            rectGridRef.current.rows,
+            rectGridRef.current.cols,
+            strokeRef.current,
+            fillRef.current
+          );
+          nextGrp.set({ selectable: false, evented: false });
+          fc.remove(obj);
+          fc.add(nextGrp);
+          ds.obj = nextGrp;
+        } else {
+          obj.set({ left, top, width, height });
+          obj.setCoords();
+        }
+      } else if (mode === 'triangle') {
+        obj.set({ left, top, width, height });
+        obj.setCoords();
+      } else if (mode === 'star') {
+        const pts = buildPolygonPoints(
+          polygonVariantRef.current,
+          0,
+          0,
+          Math.max(4, width / 2),
+          Math.max(4, height / 2)
+        );
+        const st = strokeRef.current;
+        const fl = fillRef.current;
+        const sw = st.width;
+        const dash = getScaledDashArray(st.pattern, Math.max(1, sw));
+        const nextPoly = new fabric.Polygon(pts, {
+          left: left + width / 2,
+          top: top + height / 2,
+          fill: buildFillValue(fl, width, height),
+          fillMeta: { ...fl },
+          stroke: sw > 0 ? applyColorOpacity(st.color, st.opacity) : null,
+          strokeColorHex: st.color,
+          strokeOpacity: st.opacity,
+          strokeWidth: sw,
+          strokeDashArray: dash || undefined,
+          strokePattern: st.pattern,
+          doubleLine: st.doubleLine,
+          strokeUniform: true,
+          strokeLineJoin: 'round',
+          isPolygonMorphable: true,
+          polygonVariant: polygonVariantRef.current,
+          baseLocalPoints: pts.map((p) => ({ x: p.x, y: p.y })),
+          originX: 'center',
+          originY: 'center',
+          selectable: false,
+          evented: false,
+          cornerColor: '#2563EB',
+          borderColor: '#2563EB',
+        });
+        nextPoly.baseWidth = nextPoly.width;
+        nextPoly.baseHeight = nextPoly.height;
+        nextPoly.basePathOffset = {
+          x: nextPoly.pathOffset?.x || 0,
+          y: nextPoly.pathOffset?.y || 0,
+        };
+        fc.remove(obj);
+        fc.add(nextPoly);
+        ds.obj = nextPoly;
+      }
+
+      fc.requestRenderAll();
+    });
+
+    fc.on('mouse:up', () => {
+      rotatingAngleHudRef.current = null;
+
+      if (isPanningRef.current) {
+        isPanningRef.current = false;
+        panLastScreenRef.current = null;
+        fc.selection = activeModeRef.current === 'select';
+        fc.defaultCursor = activeModeRef.current === 'select' ? 'default' : 'crosshair';
+        return;
+      }
+
+      const mode = activeModeRef.current;
+      if (mode === 'bezier' && bezierEditRef.current?.draggingHandle) {
+        const edit = bezierEditRef.current;
+        const dragged = edit.draggingHandle;
+        edit.draggingHandle = null;
+        snapIndicatorRef.current = null;
+        edit.pathObj.set({ dirty: true });
+        edit.pathObj.setCoords();
+        if (
+          (dragged === 'p1' || dragged === 'p2') &&
+          !edit.pathObj.isClosedContour &&
+          snapEnabledRef.current
+        ) {
+          const merged = mergeObjectWithEndpointSnaps(fc, edit.pathObj, fillRef.current);
+          if (merged) {
+            bezierEditRef.current = null;
+          }
+        }
+        fc.requestRenderAll();
+        pushHistory();
+        return;
+      }
+
+      if (mode === 'lasso' && isDrawingLassoRef.current) {
         isDrawingLassoRef.current = false;
-        if (lassoRafRef.current !== null) {
-          window.cancelAnimationFrame(lassoRafRef.current);
-          lassoRafRef.current = null;
-        }
-        const pts = lassoPointsRef.current.slice();
+        const pts = [...lassoPointsRef.current];
         lassoPointsRef.current = [];
         fc.requestRenderAll();
         if (pts.length >= 3) {
-          void extractLassoFragment(fc, pts, (fragImg) => {
-            activeModeRef.current = 'select';
-            setActiveMode('select');
-            syncFabricToolState();
-            fc.setActiveObject(fragImg);
-            fragImg.setCoords();
-            fc.requestRenderAll();
-            refreshEmptyState();
-            refreshSelectedInfo();
-            saveHistory();
-            trackFunction('lasso_extract_fragment', 'selection', {
-              points: pts.length,
-            });
+          void extractLassoFragment(fc, pts, (frag) => {
+            if (frag) {
+              setActiveMode('select');
+              fc.setActiveObject(frag);
+              refreshSelectionInfo();
+              pushHistory();
+            }
           });
-        } else {
-          refreshEmptyState();
-          trackFunction('lasso_cancel', 'selection', { points: pts.length });
         }
         return;
       }
 
-      if (!isDrawingShapeRef.current || !tempShapeRef.current) {
-        if (zOrderChangedOnTap) {
-          zOrderChangedOnTap = false;
-          saveHistory();
-        }
-        return;
-      }
-      isDrawingShapeRef.current = false;
-
-      const pt = fc.getPointer(opt.e);
-      const sx = shapeStartRef.current.x;
-      const sy = shapeStartRef.current.y;
-      const mode = activeModeRef.current;
-      const shape = tempShapeRef.current;
-      tempShapeRef.current = null;
-
-      const endX = mode === 'line' || mode === 'bezier' ? shape.x2 : pt.x;
-      const endY = mode === 'line' || mode === 'bezier' ? shape.y2 : pt.y;
-      const dist = Math.hypot(endX - sx, endY - sy);
-      const startSnap = pendingLineStartSnapRef.current;
-      const endSnap = pendingLineEndSnapRef.current;
-      pendingLineStartSnapRef.current = null;
-      pendingLineEndSnapRef.current = null;
-
-      // Multi-segment closed contour mode for Line tool
-      if (mode === 'line' && contourSessionRef.current) {
-        const cSess = contourSessionRef.current;
-        fc.remove(shape);
-        const nextPt = dist < 4 ? pt : { x: endX, y: endY };
-        const finalPt = endSnap ? endSnap.point : nextPt;
-        const firstPt = cSess.points[0];
-
-        if (
-          cSess.points.length >= 3 &&
-          Math.hypot(finalPt.x - firstPt.x, finalPt.y - firstPt.y) <=
-            16 / Math.max(0.15, fc.getZoom() || 1)
-        ) {
-          finalizeContourSession(false);
-          return;
-        }
-
-        if (
-          Math.hypot(
-            finalPt.x - cSess.points[cSess.points.length - 1].x,
-            finalPt.y - cSess.points[cSess.points.length - 1].y
-          ) < 3
-        ) {
-          fc.requestRenderAll();
-          return;
-        }
-
-        cSess.points.push(finalPt);
-        const segs = [];
-        for (let i = 0; i < cSess.points.length - 1; i++) {
-          segs.push({ type: 'L' as const, from: cSess.points[i], to: cSess.points[i + 1] });
-        }
-        const previewW =
-          strokeRef.current.width > 0 ? strokeRef.current.width : 1.5;
-        const previewStrokeVal =
-          strokeRef.current.width > 0
-            ? applyColorOpacity(strokeRef.current.color, strokeRef.current.opacity)
-            : '#3B82F6';
-        const dash = getScaledDashArray(strokeRef.current.pattern, previewW);
-        const nextPreviewPath = buildFabricPathFromWorldSegments(
-          segs,
-          {
-            stroke: previewStrokeVal,
-            strokeColorHex: strokeRef.current.color,
-            strokeOpacity: strokeRef.current.opacity,
-            strokeWidth: previewW,
-            strokeDashArray: dash || undefined,
-            strokePattern: strokeRef.current.pattern,
-            doubleLine: strokeRef.current.doubleLine,
-            brushType: 'standard',
-          },
-          false,
-          fillRef.current,
-          false
-        );
-        if (nextPreviewPath) {
-          fc.remove(cSess.pathObj);
-          fc.add(nextPreviewPath);
-          cSess.pathObj = nextPreviewPath;
-          if (cSess.previewLine) {
-            cSess.previewLine.set({
-              x1: finalPt.x,
-              y1: finalPt.y,
-              x2: firstPt.x,
-              y2: firstPt.y,
-            });
-            fc.bringToFront(cSess.previewLine);
-          }
-          if (cSess.startMarker) {
-            fc.bringToFront(cSess.startMarker);
-          }
-        }
-        fc.requestRenderAll();
-        return;
-      }
-
-      if (dist < 4) {
-        fc.remove(shape);
-        fc.requestRenderAll();
-        refreshEmptyState();
-        return;
-      }
-
-      if (mode === 'line' && closedContourRef.current) {
-        fc.remove(shape);
-        const p0 = { x: sx, y: sy };
-        const p1 = { x: endX, y: endY };
-        const previewW =
-          strokeRef.current.width > 0 ? strokeRef.current.width : 1.5;
-        const previewStrokeVal =
-          strokeRef.current.width > 0
-            ? applyColorOpacity(strokeRef.current.color, strokeRef.current.opacity)
-            : '#3B82F6';
-        const dash = getScaledDashArray(strokeRef.current.pattern, previewW);
-        const pathObj = buildFabricPathFromWorldSegments(
-          [{ type: 'L', from: p0, to: p1 }],
-          {
-            stroke: previewStrokeVal,
-            strokeColorHex: strokeRef.current.color,
-            strokeOpacity: strokeRef.current.opacity,
-            strokeWidth: previewW,
-            strokeDashArray: dash || undefined,
-            strokePattern: strokeRef.current.pattern,
-            doubleLine: strokeRef.current.doubleLine,
-            brushType: 'standard',
-          },
-          false,
-          fillRef.current,
-          false
-        );
-        const previewLine = new fabric.Line([p1.x, p1.y, p0.x, p0.y], {
-          stroke: '#3B82F6',
-          strokeWidth: 1.5,
-          strokeDashArray: [5, 5],
-          selectable: false,
-          evented: false,
-          excludeFromExport: true,
-        });
-        const startMarker = new fabric.Circle({
-          left: p0.x,
-          top: p0.y,
-          originX: 'center',
-          originY: 'center',
-          radius: 7,
-          fill: '#10B981',
-          stroke: '#FFFFFF',
-          strokeWidth: 2,
-          selectable: false,
-          evented: false,
-          excludeFromExport: true,
-        });
-        fc.add(pathObj, previewLine, startMarker);
-        contourSessionRef.current = {
-          points: [p0, p1],
-          pathObj,
-          previewLine,
-          startMarker,
-        };
-        setIsEditingContour(true);
-        fc.requestRenderAll();
-        return;
-      }
+      const ds = drawingShapeRef.current;
+      if (!ds) return;
+      drawingShapeRef.current = null;
+      const { obj, startX, startY } = ds;
 
       if (mode === 'bezier') {
-        const ex = shape.x2;
-        const ey = shape.y2;
-        fc.remove(shape);
-
-        const dx = ex - sx;
-        const dy = ey - sy;
-        const len = Math.max(1, Math.hypot(dx, dy));
-        const nx = -dy / len;
-        const ny = dx / len;
-        const curveOffset = Math.min(48, len * 0.22);
-
-        const p0: Point = { x: sx, y: sy };
-        const p3: Point = { x: ex, y: ey };
-        const cp1: Point = {
-          x: sx + dx * 0.33 + nx * curveOffset,
-          y: sy + dy * 0.33 + ny * curveOffset,
-        };
-        const cp2: Point = {
-          x: sx + dx * 0.67 - nx * curveOffset,
-          y: sy + dy * 0.67 - ny * curveOffset,
-        };
-
-        const isClosedBez = closedContourRef.current;
-        const bezWidth =
-          isClosedBez && fillRef.current.mode !== 'none'
-            ? strokeRef.current.width
-            : Math.max(1, strokeRef.current.width);
-        const dash = getScaledDashArray(strokeRef.current.pattern, bezWidth);
-        const effectiveStroke = applyColorOpacity(
-          strokeRef.current.color,
-          strokeRef.current.opacity
-        );
-        const makePath = (a: Point, b: Point, c: Point, d: Point) =>
-          new fabric.Path(
-            `M ${a.x} ${a.y} C ${b.x} ${b.y} ${c.x} ${c.y} ${d.x} ${d.y}${isClosedBez ? ' Z' : ''}`,
-            {
-              fill: isClosedBez ? buildFillValue(fillRef.current) : 'transparent',
-              fillMeta: isClosedBez ? { ...fillRef.current } : undefined,
-              isClosedContour: isClosedBez,
-              stroke: bezWidth > 0 ? effectiveStroke : null,
-              strokeColorHex: strokeRef.current.color,
-              strokeOpacity: strokeRef.current.opacity,
-              strokeWidth: bezWidth,
-              strokeDashArray: dash || undefined,
-              strokePattern: strokeRef.current.pattern,
-              doubleLine: strokeRef.current.doubleLine,
-              strokeUniform: true,
-              strokeLineCap: 'round',
-              perPixelTargetFind: !isClosedBez,
-              targetFindTolerance: 16,
-              selectable: false,
-              evented: false,
-            }
-          );
-
-        const pathObj = makePath(p0, cp1, cp2, p3);
-        const g1 = new fabric.Line([p0.x, p0.y, cp1.x, cp1.y], {
-          stroke: '#3B82F6',
-          strokeWidth: 1.5,
-          strokeDashArray: [4, 4],
-          selectable: false,
-          evented: false,
-          excludeFromExport: true,
-        });
-        const g2 = new fabric.Line([p3.x, p3.y, cp2.x, cp2.y], {
-          stroke: '#3B82F6',
-          strokeWidth: 1.5,
-          strokeDashArray: [4, 4],
-          selectable: false,
-          evented: false,
-          excludeFromExport: true,
-        });
-
-        const makeHandle = (pos: Point, isControl: boolean) =>
-          new fabric.Circle({
-            left: pos.x,
-            top: pos.y,
-            originX: 'center',
-            originY: 'center',
-            radius: isControl ? 8 : 9,
-            fill: isControl ? '#2563EB' : '#FFFFFF',
-            stroke: '#2563EB',
-            strokeWidth: 2.5,
-            hasControls: false,
-            hasBorders: false,
-            padding: 16,
-            selectable: true,
-            evented: true,
-            excludeFromExport: true,
-          });
-
-        const h0 = makeHandle(p0, false);
-        const hc1 = makeHandle(cp1, true);
-        const hc2 = makeHandle(cp2, true);
-        const h3 = makeHandle(p3, false);
-
-        fc.add(pathObj, g1, g2, h0, hc1, hc2, h3);
-        bezierSessionRef.current = {
-          pathObj,
-          p0,
-          cp1,
-          cp2,
-          p3,
-          h0,
-          hc1,
-          hc2,
-          h3,
-          g1,
-          g2,
-        };
-        setIsEditingBezier(true);
-        fc.setActiveObject(hc1);
-        fc.requestRenderAll();
-        return;
-      }
-
-      let finalShape = shape;
-      if (mode === 'line') {
-        if (
-          startSnap &&
-          startSnap.targetObj &&
-          startSnap.targetEnd !== 'self' &&
-          fc.getObjects().includes(startSnap.targetObj)
-        ) {
-          const merged = mergeTwoOpenObjects(
-            finalShape,
-            'start',
-            startSnap.targetObj,
-            startSnap.targetEnd,
-            fillRef.current
-          );
-          if (merged) {
-            fc.remove(finalShape);
-            fc.remove(startSnap.targetObj);
-            fc.add(merged);
-            finalShape = merged;
-          }
-        }
-        if (
-          endSnap &&
-          endSnap.targetObj &&
-          endSnap.targetEnd !== 'self' &&
-          endSnap.targetObj !== startSnap?.targetObj &&
-          fc.getObjects().includes(endSnap.targetObj)
-        ) {
-          const merged2 = mergeTwoOpenObjects(
-            finalShape,
-            'end',
-            endSnap.targetObj,
-            endSnap.targetEnd,
-            fillRef.current
-          );
-          if (merged2) {
-            fc.remove(finalShape);
-            fc.remove(endSnap.targetObj);
-            fc.add(merged2);
-            finalShape = merged2;
-          }
-        }
-      } else if (mode === 'triangle') {
-        const left = shape.left || 0;
-        const top = shape.top || 0;
-        const w = Math.max(2, shape.width || 2);
-        const h = Math.max(2, shape.height || 2);
-        const triPts = [
-          { x: left + w / 2, y: top },
-          { x: left + w, y: top + h },
-          { x: left, y: top + h },
-        ];
-        fc.remove(shape);
-        finalShape = new fabric.Polygon(triPts, {
-          fill: shape.fill,
-          fillMeta: shape.fillMeta,
-          stroke: shape.stroke,
-          strokeColorHex: shape.strokeColorHex,
-          strokeOpacity: shape.strokeOpacity,
-          strokeWidth: shape.strokeWidth,
-          strokeDashArray: shape.strokeDashArray,
-          strokePattern: shape.strokePattern,
-          doubleLine: shape.doubleLine,
-          strokeUniform: true,
-          strokeLineJoin: 'round',
-          perPixelTargetFind: shape.perPixelTargetFind,
-          targetFindTolerance: shape.targetFindTolerance,
-          selectable: true,
-          evented: true,
-        });
-        finalShape.set({
-          baseLocalPoints: finalShape.points.map((p: any) => ({ x: p.x, y: p.y })),
-          baseWidth: finalShape.width,
-          baseHeight: finalShape.height,
-          basePathOffset: {
-            x: finalShape.pathOffset?.x || 0,
-            y: finalShape.pathOffset?.y || 0,
-          },
-          cornerRoundRatio: 0,
-          shapeSubtype: 'triangle',
-        });
-        fc.add(finalShape);
-      } else if (mode === 'star') {
-        finalShape.set({
-          baseLocalPoints: finalShape.points.map((p: any) => ({ x: p.x, y: p.y })),
-          baseWidth: finalShape.width,
-          baseHeight: finalShape.height,
-          basePathOffset: {
-            x: finalShape.pathOffset?.x || 0,
-            y: finalShape.pathOffset?.y || 0,
-          },
-          cornerRoundRatio: 0,
-          shapeSubtype: polygonVariantRef.current,
-        });
-      } else if (mode === 'rect') {
-        finalShape.set({ cornerRoundRatio: 0 });
-      }
-
-      if (finalShape.fillMeta?.mode === 'photo') {
-        applyFillToObject(finalShape, finalShape.fillMeta, fc);
-      }
-
-      // Keep active drawing tool selected so users can draw multiple shapes/lines in sequence
-      attachControlsToObject(finalShape);
-      syncFabricToolState();
-      finalShape.setCoords();
-      fc.requestRenderAll();
-      setSelectedInfo(null);
-      refreshEmptyState();
-      saveHistory();
-      trackFunction('draw_shape', 'draw', {
-        shape_mode: mode,
-        fill_mode: finalShape.fillMeta?.mode || 'none',
-        snap_enabled: snapEnabledRef.current,
-      });
-    });
-
-    // Live Bezier Handle Dragging + Endpoint Snapping + Bounding Box Sync
-    fc.on('object:moving', (opt: any) => {
-      const session = bezierSessionRef.current;
-      const target = opt.target;
-
-      if (
-        session &&
-        (target === session.h0 ||
-          target === session.hc1 ||
-          target === session.hc2 ||
-          target === session.h3)
-      ) {
-        let nx = target.left;
-        let ny = target.top;
-        let autoCloseSelf = false;
-        if ((target === session.h0 || target === session.h3) && snapEnabledRef.current) {
-          const otherPt = target === session.h0 ? session.p3 : session.p0;
-          const snap = findNearestEndpointSnap(
-            fc,
-            { x: nx, y: ny },
-            [session.pathObj],
-            fc.getZoom() || 1,
-            otherPt
-          );
-          if (snap) {
-            nx = snap.point.x;
-            ny = snap.point.y;
-            target.set({ left: nx, top: ny });
-            snapIndicatorRef.current = snap.point;
-            if (snap.targetEnd === 'self') {
-              autoCloseSelf = true;
-            }
-          } else {
-            snapIndicatorRef.current = null;
-          }
-        }
-
-        if (target === session.h0) {
-          session.p0 = { x: nx, y: ny };
-        } else if (target === session.hc1) {
-          session.cp1 = { x: nx, y: ny };
-        } else if (target === session.hc2) {
-          session.cp2 = { x: nx, y: ny };
-        } else if (target === session.h3) {
-          session.p3 = { x: nx, y: ny };
-        }
-
-        session.g1.set({
-          x1: session.p0.x,
-          y1: session.p0.y,
-          x2: session.cp1.x,
-          y2: session.cp1.y,
-        });
-        session.g2.set({
-          x1: session.p3.x,
-          y1: session.p3.y,
-          x2: session.cp2.x,
-          y2: session.cp2.y,
-        });
-
-        const oldPath = session.pathObj;
-        const isClosedBez =
-          closedContourRef.current ||
-          autoCloseSelf ||
-          Math.hypot(session.p3.x - session.p0.x, session.p3.y - session.p0.y) <= 3.5;
-        const nextPath = new fabric.Path(
-          `M ${session.p0.x} ${session.p0.y} C ${session.cp1.x} ${session.cp1.y} ${session.cp2.x} ${session.cp2.y} ${session.p3.x} ${session.p3.y}${isClosedBez ? ' Z' : ''}`,
-          {
-            fill: isClosedBez ? buildFillValue(fillRef.current) : 'transparent',
-            fillMeta: isClosedBez ? { ...fillRef.current } : undefined,
-            isClosedContour: isClosedBez,
-            stroke: oldPath.stroke,
-            strokeColorHex: oldPath.strokeColorHex,
-            strokeOpacity: oldPath.strokeOpacity,
-            strokeWidth: oldPath.strokeWidth,
-            strokeDashArray: oldPath.strokeDashArray,
-            strokePattern: oldPath.strokePattern,
-            doubleLine: Boolean(oldPath.doubleLine),
-            strokeUniform: true,
-            strokeLineCap: 'round',
-            perPixelTargetFind: !isClosedBez,
-            targetFindTolerance: 16,
-            selectable: false,
-            evented: false,
-          }
-        );
-
-        if (isClosedBez && fillRef.current.mode === 'photo') {
-          applyFillToObject(nextPath, fillRef.current, fc);
-        }
-
-        const idx = fc.getObjects().indexOf(oldPath);
-        fc.remove(oldPath);
-        if (idx >= 0) {
-          fc.insertAt(nextPath, idx, false);
-        } else {
-          fc.add(nextPath);
-        }
-        session.pathObj = nextPath;
-        fc.requestRenderAll();
-        return;
-      }
-
-      if (target && isMergeableOpenLine(target) && snapEnabledRef.current) {
-        const eps = getObjectWorldEndpoints(target);
-        if (eps) {
-          const zoom = fc.getZoom() || 1;
-          const sStart = findNearestEndpointSnap(fc, eps.start, [target], zoom);
-          const sEnd = findNearestEndpointSnap(fc, eps.end, [target], zoom);
-          let chosenEnd: 'start' | 'end' | null = null;
-          let chosenSnap: EndpointSnapMatch | null = null;
-          let originPt = eps.start;
-          if (sStart && (!sEnd || sStart.distance <= sEnd.distance)) {
-            chosenEnd = 'start';
-            chosenSnap = sStart;
-            originPt = eps.start;
-          } else if (sEnd) {
-            chosenEnd = 'end';
-            chosenSnap = sEnd;
-            originPt = eps.end;
-          }
-          if (chosenEnd && chosenSnap) {
-            target.set({
-              left: (target.left || 0) + (chosenSnap.point.x - originPt.x),
-              top: (target.top || 0) + (chosenSnap.point.y - originPt.y),
-            });
-            target.setCoords();
-            snapIndicatorRef.current = chosenSnap.point;
-            pendingEndpointMergeRef.current = {
-              obj: target,
-              end: chosenEnd,
-              snap: chosenSnap,
-            };
-          } else {
-            snapIndicatorRef.current = null;
-            pendingEndpointMergeRef.current = null;
-          }
-        }
-      }
-
-      refreshSelectedInfo();
-    });
-
-    // Save history after finishing IText direct on-canvas editing
-    fc.on('text:editing:exited', () => {
-      refreshSelectedInfo();
-      saveHistory();
-    });
-
-    // Desktop Mouse Wheel & Trackpad Pinch Zoom
-    fc.on('mouse:wheel', (opt: any) => {
-      clearEmptyLongPressTimer();
-      setCanvasPasteMenu(null);
-      const evt = opt.e as WheelEvent;
-      evt.preventDefault();
-      evt.stopPropagation();
-
-      let zoom = fc.getZoom();
-      zoom *= 0.999 ** evt.deltaY;
-      zoom = Math.max(0.08, Math.min(5, zoom));
-
-      fc.zoomToPoint(new fabric.Point(evt.offsetX, evt.offsetY), zoom);
-      setZoomPercent(Math.round(zoom * 100));
-      renderBackground();
-      refreshSelectedInfo();
-    });
-
-    // Mobile 2-Finger Pinch-to-Zoom & Pan Gesture Handler
-    const upperEl: HTMLElement | undefined = fc.upperCanvasEl;
-    let pinchStartDist = 0;
-    let pinchStartZoom = 1;
-    let prevPinchMid: Point = { x: 0, y: 0 };
-
-    const getTouchPoint = (touch: Touch): Point => {
-      const rect = upperEl!.getBoundingClientRect();
-      return {
-        x: touch.clientX - rect.left,
-        y: touch.clientY - rect.top,
-      };
-    };
-
-    const handleTouchStart = (e: TouchEvent) => {
-      if (e.touches.length === 1) {
-        lastSingleTouchRef.current = {
-          time: Date.now(),
-          count: fc.getObjects().length,
-        };
-      } else if (e.touches.length >= 2) {
-        e.preventDefault();
-        e.stopPropagation();
-
-        clearCornerLongPressTimer();
-        clearEmptyLongPressTimer();
-        setCanvasPasteMenu(null);
-        if (cornerRoundingDragRef.current) {
-          cornerRoundingDragRef.current = null;
-        }
-
-        if (!isPinchingRef.current) {
-          isPinchingRef.current = true;
-
-          if (fc._isCurrentlyDrawing) {
-            fc._isCurrentlyDrawing = false;
-            fc.clearContext(fc.contextTop);
-          }
-          if (tempShapeRef.current) {
-            fc.remove(tempShapeRef.current);
-            tempShapeRef.current = null;
-            isDrawingShapeRef.current = false;
-          }
-          if (isDrawingLassoRef.current) {
-            isDrawingLassoRef.current = false;
-            lassoPointsRef.current = [];
-            if (lassoRafRef.current !== null) {
-              window.cancelAnimationFrame(lassoRafRef.current);
-              lassoRafRef.current = null;
-            }
-            fc.requestRenderAll();
-          }
-          if (Date.now() - lastSingleTouchRef.current.time < 220) {
-            const objs = fc.getObjects();
-            if (objs.length > lastSingleTouchRef.current.count) {
-              fc.remove(objs[objs.length - 1]);
-            }
-          }
-        }
-
-        const p1 = getTouchPoint(e.touches[0]);
-        const p2 = getTouchPoint(e.touches[1]);
-        pinchStartDist = Math.max(1, Math.hypot(p2.x - p1.x, p2.y - p1.y));
-        pinchStartZoom = fc.getZoom();
-        prevPinchMid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
-      }
-    };
-
-    const handleTouchMove = (e: TouchEvent) => {
-      if (e.touches.length >= 2 && isPinchingRef.current) {
-        e.preventDefault();
-        e.stopPropagation();
-
-        const p1 = getTouchPoint(e.touches[0]);
-        const p2 = getTouchPoint(e.touches[1]);
-        const dist = Math.max(1, Math.hypot(p2.x - p1.x, p2.y - p1.y));
-        const mid = { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 };
-
-        const dx = mid.x - prevPinchMid.x;
-        const dy = mid.y - prevPinchMid.y;
-        fc.relativePan(new fabric.Point(dx, dy));
-
-        const nextZoom = Math.max(0.08, Math.min(5, pinchStartZoom * (dist / pinchStartDist)));
-        fc.zoomToPoint(new fabric.Point(mid.x, mid.y), nextZoom);
-        setZoomPercent(Math.round(nextZoom * 100));
-
-        prevPinchMid = mid;
-        renderBackground();
-        refreshSelectedInfo();
-      }
-    };
-
-    const handleTouchEnd = (e: TouchEvent) => {
-      if (isPinchingRef.current) {
-        if (e.touches.length < 2) {
-          e.preventDefault();
-          e.stopPropagation();
-        }
-        if (e.touches.length === 0) {
-          isPinchingRef.current = false;
-        }
-      }
-    };
-
-    const handleCanvasContextMenu = (e: Event) => {
-      e.preventDefault();
-      const pe = e as PointerEvent;
-      if (
-        pe.pointerType === 'touch' ||
-        pendingCornerPressRef.current ||
-        cornerRoundingDragRef.current ||
-        emptyLongPressTimerRef.current !== null ||
-        emptyLongPressTriggeredRef.current ||
-        canvasPasteMenuOpenRef.current
-      ) {
-        return;
-      }
-      setObjectEditorOpen(false);
-      let selectedNew = false;
-      if (activeModeRef.current === 'select' && typeof fc.findTarget === 'function') {
-        const hit = fc.findTarget(e, false);
-        if (
-          hit &&
-          !hit.excludeFromExport &&
-          !hit.isEraserPath &&
-          hit !== fc.getActiveObject()
-        ) {
-          fc.setActiveObject(hit);
+        const x2 = obj.x2 ?? startX;
+        const y2 = obj.y2 ?? startY;
+        fc.remove(obj);
+        snapIndicatorRef.current = null;
+        if (Math.hypot(x2 - startX, y2 - startY) < 6) {
           fc.requestRenderAll();
-          refreshSelectedInfo();
-          selectedNew = true;
+          return;
         }
+        const st = strokeRef.current;
+        const dx = x2 - startX;
+        const dy = y2 - startY;
+        const p1 = { x: startX, y: startY };
+        const p2 = { x: x2, y: y2 };
+        const cp1 = { x: startX + dx * 0.28, y: startY + dy * 0.28 };
+        const cp2 = { x: startX + dx * 0.72, y: startY + dy * 0.72 };
+        const closed = closedContourRef.current;
+        const pathObj = buildFabricPathFromWorldSegments(
+          [{ type: 'C', from: p1, cp1, cp2, to: p2 }],
+          {
+            stroke: st.width > 0 ? applyColorOpacity(st.color, st.opacity) : null,
+            strokeColorHex: st.color,
+            strokeOpacity: st.opacity,
+            strokeWidth: Math.max(1, st.width),
+            strokeDashArray: getScaledDashArray(st.pattern, Math.max(1, st.width)) || undefined,
+            strokePattern: st.pattern,
+            doubleLine: st.doubleLine,
+            brushType: 'standard',
+            isBezierCurve: true,
+          },
+          closed,
+          fillRef.current,
+          true
+        );
+        if (pathObj) {
+          fc.add(pathObj);
+          bezierEditRef.current = { pathObj, p1, cp1, cp2, p2, draggingHandle: null };
+          fc.requestRenderAll();
+          pushHistory();
+        }
+        return;
       }
-      if (!selectedNew && sidebarOpenRef.current && activePopoverRef.current === 'shapes') {
-        setActivePopover(null);
-        trackFunction('close_shapes_context_menu', 'ui');
-      } else {
-        setSidebarOpen(true);
-        setActivePopover('shapes');
-        trackFunction('open_shapes_context_menu', 'ui', { selected_new: selectedNew });
+
+      // Discard tiny accidental clicks
+      if (mode === 'line') {
+        const len = Math.hypot((obj.x2 ?? startX) - startX, (obj.y2 ?? startY) - startY);
+        if (len < 3) {
+          fc.remove(obj);
+          snapIndicatorRef.current = null;
+          fc.requestRenderAll();
+          return;
+        }
+        obj.set({ selectable: true, evented: true });
+        if (snapEnabledRef.current) {
+          mergeObjectWithEndpointSnaps(fc, obj, fillRef.current);
+        }
+        snapIndicatorRef.current = null;
+        fc.requestRenderAll();
+        pushHistory();
+        return;
       }
-    };
 
-    if (upperEl) {
-      upperEl.addEventListener('touchstart', handleTouchStart, {
-        passive: false,
-        capture: true,
-      });
-      upperEl.addEventListener('touchmove', handleTouchMove, {
-        passive: false,
-        capture: true,
-      });
-      upperEl.addEventListener('touchend', handleTouchEnd, {
-        passive: false,
-        capture: true,
-      });
-      upperEl.addEventListener('touchcancel', handleTouchEnd, {
-        passive: false,
-        capture: true,
-      });
-      upperEl.addEventListener('contextmenu', handleCanvasContextMenu);
-    }
+      if ((obj.width || 0) < 3 && (obj.height || 0) < 3 && !obj.isArrowObject && !obj.isArrowGroup) {
+        fc.remove(obj);
+        fc.requestRenderAll();
+        return;
+      }
 
-    const handleResize = () => {
-      fc.setDimensions({
-        width: window.innerWidth,
-        height: window.innerHeight,
-      });
-      renderBackground();
-      refreshSelectedInfo();
+      obj.set({ selectable: true, evented: true });
+      applyFillToObject(obj, fillRef.current, fc);
+      obj.setCoords();
       fc.requestRenderAll();
+      pushHistory();
+    });
+
+    // Wheel zoom (and touchpad pan)
+    fc.on('mouse:wheel', (opt: any) => {
+      const e = opt.e as WheelEvent;
+      e.preventDefault();
+      e.stopPropagation();
+
+      if (e.ctrlKey || Math.abs(e.deltaY) >= Math.abs(e.deltaX)) {
+        const zoom = fc.getZoom() || 1;
+        const factor = Math.pow(0.9985, e.deltaY);
+        const nextZoom = Math.min(8, Math.max(0.15, zoom * factor));
+        fc.zoomToPoint(new fabric.Point(e.offsetX, e.offsetY), nextZoom);
+        setZoomPercent(Math.round(nextZoom * 100));
+        redrawBackground();
+        refreshSelectionInfo();
+      } else {
+        fc.relativePan(new fabric.Point(-e.deltaX, -e.deltaY));
+        redrawBackground();
+        refreshSelectionInfo();
+      }
+    });
+
+    // Resize listener
+    const handleResize = () => {
+      const nw = window.innerWidth;
+      const nh = window.innerHeight;
+      fc.setWidth(nw);
+      fc.setHeight(nh);
+      if (canvasSizeRef.current.preset === 'fullscreen') {
+        setCanvasSize((prev) =>
+          prev.preset === 'fullscreen' ? { preset: 'fullscreen', width: nw, height: nh } : prev
+        );
+      }
+      redrawBackground();
+      fc.requestRenderAll();
+      refreshSelectionInfo();
     };
     window.addEventListener('resize', handleResize);
 
     return () => {
-      clearCornerLongPressTimer();
-      clearEmptyLongPressTimer();
-      isDrawingLassoRef.current = false;
-      lassoPointsRef.current = [];
-      if (lassoRafRef.current !== null) {
-        window.cancelAnimationFrame(lassoRafRef.current);
-        lassoRafRef.current = null;
-      }
+      window.cancelAnimationFrame(rafId);
       window.removeEventListener('resize', handleResize);
-      if (upperEl) {
-        upperEl.removeEventListener('touchstart', handleTouchStart, true);
-        upperEl.removeEventListener('touchmove', handleTouchMove, true);
-        upperEl.removeEventListener('touchend', handleTouchEnd, true);
-        upperEl.removeEventListener('touchcancel', handleTouchEnd, true);
-        upperEl.removeEventListener('contextmenu', handleCanvasContextMenu);
-      }
       fc.dispose();
-      fabricCanvasRef.current = null;
+      fabricRef.current = null;
     };
-  }, [
-    attachControlsToObject,
-    finalizeBezierSession,
-    finalizeContourSession,
-    refreshEmptyState,
-    refreshSelectedInfo,
-    renderBackground,
-    saveHistory,
-    syncFabricToolState,
-  ]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
+  // Re-render background whenever bgConfig or canvasSize changes
   useEffect(() => {
-    syncFabricToolState();
-  }, [activeMode, stroke, eraserSize, isSpacePanning, bgConfig, syncFabricToolState]);
+    applyClipForArtboard();
+    redrawBackground();
+  }, [bgConfig, canvasSize, applyClipForArtboard, redrawBackground]);
 
+  // Native pointer listeners for textured brushes, long-press vertex corner rounding, and 2-finger pinch/pan
   useEffect(() => {
-    renderBackground();
-  }, [bgConfig, canvasSize, renderBackground]);
-
-  const handleSelectAll = useCallback(() => {
-    const fc = fabricCanvasRef.current;
+    const el = containerRef.current;
+    const fc = fabricRef.current;
     const fabric = getFabric();
-    if (!fc || !fabric) return;
+    if (!el || !fc || !fabric) return;
 
-    if (bezierSessionRef.current) {
-      finalizeBezierSession(false);
-    }
-    if (contourSessionRef.current) {
-      finalizeContourSession(false);
-    }
-
-    setObjectEditorOpen(false);
-    setActivePopover(null);
-    setActiveMode('select');
-    activeModeRef.current = 'select';
-    syncFabricToolState();
-
-    const targets = fc
-      .getObjects()
-      .filter((o: any) => o && !o.excludeFromExport && !o.isEraserPath);
-
-    if (targets.length === 0) {
-      fc.discardActiveObject();
-      fc.requestRenderAll();
-      refreshSelectedInfo();
-      trackFunction('select_all_objects', 'selection', { object_count: 0 });
-      return;
-    }
-
-    targets.forEach((o: any) => {
-      o.set({ selectable: true, evented: true });
-      o.setCoords();
-    });
-
-    if (targets.length === 1) {
-      fc.setActiveObject(targets[0]);
-    } else {
-      const sel = new fabric.ActiveSelection(targets, { canvas: fc });
-      fc.setActiveObject(sel);
-    }
-
-    fc.requestRenderAll();
-    refreshSelectedInfo();
-    trackFunction('select_all_objects', 'selection', { object_count: targets.length });
-
-    setSelectAllToast(true);
-    if (selectAllToastTimerRef.current) {
-      window.clearTimeout(selectAllToastTimerRef.current);
-    }
-    selectAllToastTimerRef.current = window.setTimeout(() => {
-      setSelectAllToast(false);
-      selectAllToastTimerRef.current = null;
-    }, 1800);
-  }, [finalizeBezierSession, finalizeContourSession, refreshSelectedInfo, syncFabricToolState]);
-
-  // Keyboard shortcuts
-  useEffect(() => {
-    const isTypingTarget = (target: EventTarget | null) => {
-      const el = target as HTMLElement | null;
-      if (el) {
-        const tag = el.tagName;
-        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
-        if (el.isContentEditable) return true;
-      }
-      const activeObj = fabricCanvasRef.current?.getActiveObject();
-      if (activeObj && activeObj.isEditing) return true;
-      return false;
+    const clearPreview = () => {
+      const prevCanvas = brushPreviewCanvasRef.current;
+      if (!prevCanvas) return;
+      const pctx = prevCanvas.getContext('2d');
+      pctx?.clearRect(0, 0, prevCanvas.width, prevCanvas.height);
     };
 
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (isTypingTarget(e.target)) return;
+    const syncPreviewFromBuffer = () => {
+      const prevCanvas = brushPreviewCanvasRef.current;
+      const bufCanvas = brushBufferRef.current;
+      if (!prevCanvas || !bufCanvas) return;
+      if (prevCanvas.width !== bufCanvas.width || prevCanvas.height !== bufCanvas.height) {
+        prevCanvas.width = bufCanvas.width;
+        prevCanvas.height = bufCanvas.height;
+      }
+      const pctx = prevCanvas.getContext('2d');
+      if (!pctx) return;
+      pctx.clearRect(0, 0, prevCanvas.width, prevCanvas.height);
+      pctx.drawImage(bufCanvas, 0, 0);
+    };
 
-      if (e.code === 'Space' && !e.repeat) {
-        e.preventDefault();
-        isSpaceHeldRef.current = true;
-        setIsSpacePanning(true);
+    const screenToWorld = (clientX: number, clientY: number, vpt: number[]): Point2D => {
+      const rect = el.getBoundingClientRect();
+      const sx = clientX - rect.left;
+      const sy = clientY - rect.top;
+      const inv = fabric.util.invertTransform(vpt);
+      const wp = fabric.util.transformPoint(new fabric.Point(sx, sy), inv);
+      return { x: wp.x, y: wp.y };
+    };
+
+    const worldToClient = (wx: number, wy: number, vpt: number[]): Point2D => {
+      const rect = el.getBoundingClientRect();
+      const sp = fabric.util.transformPoint(new fabric.Point(wx, wy), vpt);
+      return { x: sp.x + rect.left, y: sp.y + rect.top };
+    };
+
+    const restoreObjLocks = (
+      obj: any,
+      locks: {
+        prevLockX: boolean;
+        prevLockY: boolean;
+        prevLockScaleX: boolean;
+        prevLockScaleY: boolean;
+        prevLockRot: boolean;
+        prevHasControls: boolean;
+      } | null
+    ) => {
+      if (!obj || !locks) return;
+      obj.set({
+        lockMovementX: locks.prevLockX,
+        lockMovementY: locks.prevLockY,
+        lockScalingX: locks.prevLockScaleX,
+        lockScalingY: locks.prevLockScaleY,
+        lockRotation: locks.prevLockRot,
+        hasControls: locks.prevHasControls,
+      });
+    };
+
+    const cancelCornerPending = () => {
+      if (cornerLongPressTimerRef.current !== null) {
+        window.clearTimeout(cornerLongPressTimerRef.current);
+        cornerLongPressTimerRef.current = null;
+      }
+      cornerPendingRef.current = null;
+    };
+
+    const cancelVertexPending = () => {
+      if (vertexPendingRef.current?.prevLocks) {
+        restoreObjLocks(vertexPendingRef.current.obj, vertexPendingRef.current.prevLocks);
+      }
+      vertexPendingRef.current = null;
+    };
+
+    const commitActiveTexturedStroke = () => {
+      const active = brushSessionRef.current;
+      const bufCanvas = brushBufferRef.current;
+      if (!active || !bufCanvas) return;
+      brushSessionRef.current = null;
+
+      let finalEndWorld = active.lastWorld;
+      const bctx = bufCanvas.getContext('2d');
+      if (bctx) {
+        if (snapEnabledRef.current) {
+          const snapEnd = findNearestEndpointSnap(
+            fc,
+            active.lastWorld,
+            [],
+            fc.getZoom() || 1,
+            active.startWorld,
+            true
+          );
+          if (snapEnd) {
+            finalEndWorld = snapEnd.point;
+            drawSegment(
+              bctx,
+              active.session,
+              {
+                x: finalEndWorld.x,
+                y: finalEndWorld.y,
+                pressure: 0.5,
+                time: performance.now(),
+              },
+              active.pointerType
+            );
+          }
+        }
+        finishStroke(bctx, active.session, active.pointerType);
+      }
+      snapIndicatorRef.current = null;
+      fc.requestRenderAll();
+
+      const cropped = cropOpaqueCanvasBounds(bufCanvas, 3);
+      clearPreview();
+      if (!cropped || cropped.width < 2 || cropped.height < 2) return;
+
+      const { dpr, vpt } = active;
+      const scaleX = 1 / (dpr * vpt[0]);
+      const scaleY = 1 / (dpr * vpt[3]);
+      const worldLeft = (cropped.minX / dpr - vpt[4]) / vpt[0];
+      const worldTop = (cropped.minY / dpr - vpt[5]) / vpt[3];
+
+      fabric.Image.fromURL(
+        cropped.dataUrl,
+        (img: any) => {
+          if (!img) return;
+          img.set({
+            left: worldLeft,
+            top: worldTop,
+            scaleX,
+            scaleY,
+            originX: 'left',
+            originY: 'top',
+            isTexturedBrushStroke: true,
+            worldEndpoints: {
+              start: active.startWorld,
+              end: finalEndWorld,
+            },
+            brushType: active.session.preset,
+            strokeColorHex: active.session.color,
+            strokeOpacity: active.session.opacity,
+            strokeWidth: active.session.size,
+            perPixelTargetFind: true,
+            targetFindTolerance: 14,
+            cornerColor: '#2563EB',
+            borderColor: '#2563EB',
+            selectable: true,
+            evented: true,
+          });
+          fc.add(img);
+          fc.requestRenderAll();
+          pushHistory();
+        },
+        { crossOrigin: 'anonymous' }
+      );
+    };
+
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.pointerType === 'touch') {
+        activeTouchesRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (activeTouchesRef.current.size === 2) {
+          cancelCornerPending();
+          // Cancel single-finger textured stroke on second finger down -> switch to pinch/pan
+          if (brushSessionRef.current) {
+            brushSessionRef.current = null;
+            clearPreview();
+            snapIndicatorRef.current = null;
+          }
+          const pts = Array.from(activeTouchesRef.current.values());
+          const dist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+          touchPinchRef.current = {
+            active: true,
+            dist: Math.max(10, dist),
+            midX: (pts[0].x + pts[1].x) / 2,
+            midY: (pts[0].y + pts[1].y) / 2,
+          };
+          fc.isDrawingMode = false;
+          return;
+        }
+      }
+
+      if (e.button !== 0 || spacePressedRef.current) return;
+
+      const targetEl = e.target as HTMLElement | null;
+      if (targetEl && targetEl.tagName !== 'CANVAS') return;
+
+      // Persistent Bezier tangent handles + tap-to-select green vertex + long-press corner rounding in Select mode
+      if (activeModeRef.current === 'select') {
+        const activeObj = fc.getActiveObject();
+
+        // Priority 1: Bezier tangent handles (orange circles) on any selected Bezier curve
+        if (activeObj && activeObj.type !== 'activeSelection' && isBezierPathObject(activeObj)) {
+          const vpt = fc.viewportTransform || [1, 0, 0, 1, 0, 0];
+          const bHandles = getObjectBezierControlHandles(activeObj);
+          let bestHandle: (typeof bHandles)[number] | null = null;
+          let bestHandleDist = 23;
+          bHandles.forEach((h) => {
+            const sc = worldToClient(h.point.x, h.point.y, vpt);
+            const d = Math.hypot(e.clientX - sc.x, e.clientY - sc.y);
+            if (d <= bestHandleDist) {
+              bestHandleDist = d;
+              bestHandle = h;
+            }
+          });
+          if (bestHandle) {
+            const picked = bestHandle as (typeof bHandles)[number];
+            cancelCornerPending();
+            cancelVertexPending();
+            if (fc._currentTransform) {
+              fc._currentTransform = null;
+            }
+            const locks = {
+              prevLockX: Boolean(activeObj.lockMovementX),
+              prevLockY: Boolean(activeObj.lockMovementY),
+              prevLockScaleX: Boolean(activeObj.lockScalingX),
+              prevLockScaleY: Boolean(activeObj.lockScalingY),
+              prevLockRot: Boolean(activeObj.lockRotation),
+              prevHasControls: activeObj.hasControls !== false,
+            };
+            activeObj.set({
+              lockMovementX: true,
+              lockMovementY: true,
+              lockScalingX: true,
+              lockScalingY: true,
+              lockRotation: true,
+              hasControls: false,
+            });
+            bezierHandleDragRef.current = {
+              obj: activeObj,
+              segIndex: picked.segIndex,
+              handle: picked.kind,
+              pointerId: e.pointerId,
+              prevLocks: locks,
+            };
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+            fc.requestRenderAll();
+            return;
+          }
+        }
+
+        const editable =
+          activeObj && activeObj.type !== 'activeSelection' && isObjectVertexEditable(activeObj);
+        const roundable =
+          activeObj && activeObj.type !== 'activeSelection' && isObjectCornerRoundable(activeObj);
+
+        if (activeObj && activeObj.type !== 'activeSelection' && (editable || roundable)) {
+          const vpt = fc.viewportTransform || [1, 0, 0, 1, 0, 0];
+          const verts = editable
+            ? getObjectEditableWorldVertices(activeObj)
+            : getObjectCornerWorldVertices(activeObj);
+
+          let nearestIdx = -1;
+          let nearestDist = 23;
+          verts.forEach((v, idx) => {
+            const sc = worldToClient(v.x, v.y, vpt);
+            const d = Math.hypot(e.clientX - sc.x, e.clientY - sc.y);
+            if (d <= nearestDist) {
+              nearestDist = d;
+              nearestIdx = idx;
+            }
+          });
+
+          if (nearestIdx === -1) {
+            if (selectedVertexRef.current) {
+              selectedVertexRef.current = null;
+              fc.requestRenderAll();
+            }
+            return;
+          }
+
+          cancelCornerPending();
+          cancelVertexPending();
+
+          const isOpenPath =
+            activeObj.type === 'line' ||
+            (activeObj.type === 'path' &&
+              !activeObj.isClosedContour &&
+              !hasPathCloseCommand(activeObj));
+          const isOpenLineEnd =
+            isOpenPath && (nearestIdx === 0 || nearestIdx === verts.length - 1);
+          const wasAlreadySelected = Boolean(
+            editable &&
+              selectedVertexRef.current &&
+              selectedVertexRef.current.obj === activeObj &&
+              selectedVertexRef.current.index === nearestIdx
+          );
+
+          const locks = {
+            prevLockX: Boolean(activeObj.lockMovementX),
+            prevLockY: Boolean(activeObj.lockMovementY),
+            prevLockScaleX: Boolean(activeObj.lockScalingX),
+            prevLockScaleY: Boolean(activeObj.lockScalingY),
+            prevLockRot: Boolean(activeObj.lockRotation),
+            prevHasControls: activeObj.hasControls !== false,
+          };
+
+          if (wasAlreadySelected) {
+            if (fc._currentTransform) {
+              fc._currentTransform = null;
+            }
+            activeObj.set({
+              lockMovementX: true,
+              lockMovementY: true,
+              lockScalingX: true,
+              lockScalingY: true,
+              lockRotation: true,
+              hasControls: false,
+            });
+          }
+
+          if (editable) {
+            vertexPendingRef.current = {
+              obj: activeObj,
+              index: nearestIdx,
+              pointerId: e.pointerId,
+              startScreenX: e.clientX,
+              startScreenY: e.clientY,
+              wasAlreadySelected,
+              isOpenLineEnd,
+              prevLocks: wasAlreadySelected ? locks : null,
+            };
+          }
+
+          if (roundable && !isOpenLineEnd) {
+            const centerWorld = activeObj.getCenterPoint();
+            const centerScreen = worldToClient(centerWorld.x, centerWorld.y, vpt);
+            const startDist = Math.max(
+              20,
+              Math.hypot(e.clientX - centerScreen.x, e.clientY - centerScreen.y)
+            );
+            const startRatio = getObjectCornerRoundRatio(activeObj) ?? 0;
+
+            cornerPendingRef.current = {
+              obj: activeObj,
+              pointerId: e.pointerId,
+              startScreenX: e.clientX,
+              startScreenY: e.clientY,
+              centerScreen,
+              startDist,
+              startRatio,
+              prevLocks: locks,
+            };
+
+            cornerLongPressTimerRef.current = window.setTimeout(() => {
+              const pending = cornerPendingRef.current;
+              cornerLongPressTimerRef.current = null;
+              cornerPendingRef.current = null;
+              if (!pending) return;
+
+              // Transfer ownership cleanly without prematurely unlocking
+              vertexPendingRef.current = null;
+
+              if (fc._currentTransform) {
+                fc._currentTransform = null;
+              }
+              const obj = pending.obj;
+              const objLocks = pending.prevLocks || {
+                prevLockX: Boolean(obj.lockMovementX),
+                prevLockY: Boolean(obj.lockMovementY),
+                prevLockScaleX: Boolean(obj.lockScalingX),
+                prevLockScaleY: Boolean(obj.lockScalingY),
+                prevLockRot: Boolean(obj.lockRotation),
+                prevHasControls: obj.hasControls !== false,
+              };
+              obj.set({
+                lockMovementX: true,
+                lockMovementY: true,
+                lockScalingX: true,
+                lockScalingY: true,
+                lockRotation: true,
+                hasControls: false,
+              });
+              cornerRoundDragRef.current = {
+                obj,
+                pointerId: pending.pointerId,
+                centerScreen: pending.centerScreen,
+                startDist: pending.startDist,
+                startRatio: pending.startRatio,
+                ...objLocks,
+              };
+              if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+                navigator.vibrate(18);
+              }
+              setCornerRoundHudRatio(Math.round(pending.startRatio * 100));
+              fc.requestRenderAll();
+            }, 360);
+          }
+        } else if (selectedVertexRef.current) {
+          selectedVertexRef.current = null;
+          fc.requestRenderAll();
+        }
         return;
       }
 
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'a') {
+      if (activeModeRef.current !== 'brush') return;
+      const st = strokeRef.current;
+      if (!isTexturedBrush(st.brushType)) return;
+
+      if (activePopoverRef.current) {
+        setActivePopover(null);
+      }
+
+      const vpt = [...(fc.viewportTransform || [1, 0, 0, 1, 0, 0])];
+      const vw = el.clientWidth || window.innerWidth;
+      const vh = el.clientHeight || window.innerHeight;
+      const dpr = Math.min(2.5, Math.max(2, window.devicePixelRatio || 1));
+
+      if (!brushBufferRef.current) {
+        brushBufferRef.current = document.createElement('canvas');
+      }
+      const buf = brushBufferRef.current;
+      buf.width = Math.round(vw * dpr);
+      buf.height = Math.round(vh * dpr);
+
+      const ctx = buf.getContext('2d');
+      if (!ctx) return;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.transform(vpt[0], vpt[1], vpt[2], vpt[3], vpt[4], vpt[5]);
+
+      let worldPt = screenToWorld(e.clientX, e.clientY, vpt);
+      if (snapEnabledRef.current) {
+        const snapStart = findNearestEndpointSnap(
+          fc,
+          worldPt,
+          [],
+          fc.getZoom() || 1,
+          null,
+          true
+        );
+        if (snapStart) {
+          worldPt = snapStart.point;
+          snapIndicatorRef.current = snapStart.point;
+          fc.requestRenderAll();
+        }
+      }
+
+      const session = beginStroke(
+        ctx,
+        {
+          x: worldPt.x,
+          y: worldPt.y,
+          pressure: e.pressure,
+          time: e.timeStamp || performance.now(),
+        },
+        e.pointerType,
+        'brush',
+        st.brushType,
+        st.color,
+        Math.max(2, st.width),
+        Math.max(0.05, st.opacity)
+      );
+
+      brushSessionRef.current = {
+        session,
+        pointerId: e.pointerId,
+        dpr,
+        vpt,
+        pointerType: e.pointerType,
+        startWorld: { x: worldPt.x, y: worldPt.y },
+        lastWorld: { x: worldPt.x, y: worldPt.y },
+      };
+      syncPreviewFromBuffer();
+    };
+
+    const onPointerMove = (e: PointerEvent) => {
+      if (e.pointerType === 'touch' && activeTouchesRef.current.has(e.pointerId)) {
+        activeTouchesRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (touchPinchRef.current?.active && activeTouchesRef.current.size >= 2) {
+          const pts = Array.from(activeTouchesRef.current.values());
+          const newDist = Math.max(10, Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y));
+          const newMidX = (pts[0].x + pts[1].x) / 2;
+          const newMidY = (pts[0].y + pts[1].y) / 2;
+
+          const prev = touchPinchRef.current;
+          const dx = newMidX - prev.midX;
+          const dy = newMidY - prev.midY;
+          fc.relativePan(new fabric.Point(dx, dy));
+
+          const scaleRatio = newDist / prev.dist;
+          const nextZoom = Math.min(8, Math.max(0.15, (fc.getZoom() || 1) * scaleRatio));
+          fc.zoomToPoint(new fabric.Point(newMidX, newMidY), nextZoom);
+          setZoomPercent(Math.round(nextZoom * 100));
+
+          prev.dist = newDist;
+          prev.midX = newMidX;
+          prev.midY = newMidY;
+          redrawBackground();
+          return;
+        }
+      }
+
+      if (
+        bezierHandleDragRef.current &&
+        bezierHandleDragRef.current.pointerId === e.pointerId
+      ) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (fc._currentTransform) {
+          fc._currentTransform = null;
+        }
+        const drag = bezierHandleDragRef.current;
+        const vpt = fc.viewportTransform || [1, 0, 0, 1, 0, 0];
+        const worldPt = screenToWorld(e.clientX, e.clientY, vpt);
+        updateObjectBezierHandle(fc, drag.obj, drag.segIndex, drag.handle, worldPt);
+        fc.requestRenderAll();
+        refreshSelectionInfo();
+        return;
+      }
+
+      if (
+        vertexPendingRef.current &&
+        vertexPendingRef.current.pointerId === e.pointerId
+      ) {
+        const vp = vertexPendingRef.current;
+        const dMoved = Math.hypot(e.clientX - vp.startScreenX, e.clientY - vp.startScreenY);
+        if (dMoved > 5) {
+          cancelCornerPending();
+          if (vp.wasAlreadySelected && vp.prevLocks) {
+            if (fc._currentTransform) {
+              fc._currentTransform = null;
+            }
+            vertexDragRef.current = {
+              obj: vp.obj,
+              index: vp.index,
+              pointerId: vp.pointerId,
+              isOpenLineEnd: vp.isOpenLineEnd,
+              prevLocks: vp.prevLocks,
+            };
+            vertexPendingRef.current = null;
+          } else if (dMoved > 8) {
+            cancelVertexPending();
+          }
+        }
+      }
+
+      if (
+        vertexDragRef.current &&
+        vertexDragRef.current.pointerId === e.pointerId
+      ) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (fc._currentTransform) {
+          fc._currentTransform = null;
+        }
+        const drag = vertexDragRef.current;
+        const vpt = fc.viewportTransform || [1, 0, 0, 1, 0, 0];
+        let worldPt = screenToWorld(e.clientX, e.clientY, vpt);
+
+        if (
+          snapEnabledRef.current &&
+          drag.isOpenLineEnd &&
+          isMergeableOpenLine(drag.obj)
+        ) {
+          const verts = getObjectEditableWorldVertices(drag.obj);
+          const segCount =
+            drag.obj.type === 'path' ? extractWorldPathSegmentsForEdit(drag.obj).length : 1;
+          const selfOther =
+            verts.length >= 2 && segCount >= 2
+              ? drag.index === 0
+                ? verts[verts.length - 1]
+                : verts[0]
+              : null;
+          const match = findNearestEndpointSnap(
+            fc,
+            worldPt,
+            [drag.obj],
+            fc.getZoom() || 1,
+            selfOther,
+            true
+          );
+          if (match) {
+            worldPt = match.point;
+            snapIndicatorRef.current = match.point;
+          } else {
+            snapIndicatorRef.current = null;
+          }
+        } else {
+          snapIndicatorRef.current = null;
+        }
+
+        const nextObj = updateObjectEditableVertex(fc, drag.obj, drag.index, worldPt);
+        if (nextObj && nextObj !== drag.obj) {
+          nextObj.set({
+            lockMovementX: true,
+            lockMovementY: true,
+            lockScalingX: true,
+            lockScalingY: true,
+            lockRotation: true,
+            hasControls: false,
+          });
+          drag.obj = nextObj;
+        }
+        selectedVertexRef.current = { obj: drag.obj, index: drag.index };
+        fc.requestRenderAll();
+        refreshSelectionInfo();
+        return;
+      }
+
+      if (
+        cornerPendingRef.current &&
+        cornerPendingRef.current.pointerId === e.pointerId
+      ) {
+        const dMoved = Math.hypot(
+          e.clientX - cornerPendingRef.current.startScreenX,
+          e.clientY - cornerPendingRef.current.startScreenY
+        );
+        if (dMoved > 10) {
+          cancelCornerPending();
+        }
+      }
+
+      if (
+        cornerRoundDragRef.current &&
+        cornerRoundDragRef.current.pointerId === e.pointerId
+      ) {
+        e.preventDefault();
+        e.stopPropagation();
+        const drag = cornerRoundDragRef.current;
+        const curDist = Math.hypot(
+          e.clientX - drag.centerScreen.x,
+          e.clientY - drag.centerScreen.y
+        );
+        const inwardDelta = (drag.startDist - curDist) / Math.max(48, drag.startDist);
+        const nextRatio = Math.max(0, Math.min(1, drag.startRatio + inwardDelta));
+        if (applyCornerRoundingToObject(drag.obj, nextRatio)) {
+          drag.obj.setCoords();
+          fc.requestRenderAll();
+          refreshSelectionInfo();
+          setCornerRoundHudRatio(Math.round(nextRatio * 100));
+        }
+        return;
+      }
+
+      const active = brushSessionRef.current;
+      const buf = brushBufferRef.current;
+      if (!active || !buf || active.pointerId !== e.pointerId) return;
+
+      const ctx = buf.getContext('2d');
+      if (!ctx) return;
+
+      const events = typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [e];
+      const list = events.length > 0 ? events : [e];
+      for (let i = 0; i < list.length; i++) {
+        const ev = list[i];
+        const wp = screenToWorld(ev.clientX, ev.clientY, active.vpt);
+        active.lastWorld = { x: wp.x, y: wp.y };
+        drawSegment(
+          ctx,
+          active.session,
+          {
+            x: wp.x,
+            y: wp.y,
+            pressure: ev.pressure,
+            time: ev.timeStamp || performance.now(),
+          },
+          active.pointerType
+        );
+      }
+      if (snapEnabledRef.current) {
+        const snapHover = findNearestEndpointSnap(
+          fc,
+          active.lastWorld,
+          [],
+          fc.getZoom() || 1,
+          active.startWorld,
+          true
+        );
+        const nextPt = snapHover ? snapHover.point : null;
+        const prevPt = snapIndicatorRef.current;
+        const changed =
+          (nextPt === null) !== (prevPt === null) ||
+          (nextPt && prevPt && (nextPt.x !== prevPt.x || nextPt.y !== prevPt.y));
+        if (changed) {
+          snapIndicatorRef.current = nextPt;
+          fc.requestRenderAll();
+        }
+      }
+      syncPreviewFromBuffer();
+    };
+
+    const onPointerUpOrCancel = (e: PointerEvent) => {
+      if (e.pointerType === 'touch') {
+        activeTouchesRef.current.delete(e.pointerId);
+        if (touchPinchRef.current?.active && activeTouchesRef.current.size < 2) {
+          touchPinchRef.current = null;
+          syncFabricToolState();
+        }
+      }
+
+      if (cornerPendingRef.current && cornerPendingRef.current.pointerId === e.pointerId) {
+        cancelCornerPending();
+      }
+
+      if (
+        bezierHandleDragRef.current &&
+        bezierHandleDragRef.current.pointerId === e.pointerId
+      ) {
+        e.preventDefault();
+        e.stopPropagation();
+        const drag = bezierHandleDragRef.current;
+        restoreObjLocks(drag.obj, drag.prevLocks);
+        drag.obj.set({ dirty: true });
+        drag.obj.setCoords();
+        bezierHandleDragRef.current = null;
+        if (isMergeableOpenLine(drag.obj)) {
+          applyEndpointControlsToSelection();
+        }
+        fc.requestRenderAll();
+        refreshSelectionInfo();
+        pushHistory();
+        trackFunction('bezier_handle_adjust', 'shapes');
+        return;
+      }
+
+      if (
+        vertexDragRef.current &&
+        vertexDragRef.current.pointerId === e.pointerId
+      ) {
+        e.preventDefault();
+        e.stopPropagation();
+        const drag = vertexDragRef.current;
+        restoreObjLocks(drag.obj, drag.prevLocks);
+        drag.obj.setCoords();
+        vertexDragRef.current = null;
+
+        if (
+          snapEnabledRef.current &&
+          drag.isOpenLineEnd &&
+          isMergeableOpenLine(drag.obj)
+        ) {
+          const merged = mergeObjectWithEndpointSnaps(fc, drag.obj, fillRef.current);
+          if (merged) {
+            selectedVertexRef.current = null;
+            fc.setActiveObject(merged);
+            applyEndpointControlsToSelection();
+          } else {
+            applyEndpointControlsToSelection();
+          }
+        } else if (isMergeableOpenLine(drag.obj)) {
+          applyEndpointControlsToSelection();
+        }
+
+        snapIndicatorRef.current = null;
+        fc.requestRenderAll();
+        refreshSelectionInfo();
+        pushHistory();
+        trackFunction('vertex_move', 'shapes');
+        return;
+      }
+
+      if (
+        vertexPendingRef.current &&
+        vertexPendingRef.current.pointerId === e.pointerId
+      ) {
+        const vp = vertexPendingRef.current;
+        if (vp.prevLocks) {
+          restoreObjLocks(vp.obj, vp.prevLocks);
+        }
+        vertexPendingRef.current = null;
+        const dMoved = Math.hypot(e.clientX - vp.startScreenX, e.clientY - vp.startScreenY);
+        if (dMoved <= 8) {
+          selectedVertexRef.current = { obj: vp.obj, index: vp.index };
+          fc.requestRenderAll();
+          trackFunction('vertex_select', 'shapes');
+        }
+      }
+
+      if (
+        cornerRoundDragRef.current &&
+        cornerRoundDragRef.current.pointerId === e.pointerId
+      ) {
+        e.preventDefault();
+        e.stopPropagation();
+        const drag = cornerRoundDragRef.current;
+        restoreObjLocks(drag.obj, {
+          prevLockX: drag.prevLockX,
+          prevLockY: drag.prevLockY,
+          prevLockScaleX: drag.prevLockScaleX,
+          prevLockScaleY: drag.prevLockScaleY,
+          prevLockRot: drag.prevLockRot,
+          prevHasControls: drag.prevHasControls,
+        });
+        drag.obj.setCoords();
+        cornerRoundDragRef.current = null;
+        setCornerRoundHudRatio(null);
+        fc.requestRenderAll();
+        refreshSelectionInfo();
+        pushHistory();
+        trackFunction('corner_round_long_press', 'shapes');
+        return;
+      }
+
+      if (brushSessionRef.current && brushSessionRef.current.pointerId === e.pointerId) {
+        commitActiveTexturedStroke();
+      }
+    };
+
+    const blockFabricDownIfHandleDrag = (e: Event) => {
+      if (bezierHandleDragRef.current) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+      }
+    };
+
+    el.addEventListener('pointerdown', onPointerDown, true);
+    el.addEventListener('mousedown', blockFabricDownIfHandleDrag, true);
+    el.addEventListener('touchstart', blockFabricDownIfHandleDrag, true);
+    window.addEventListener('pointermove', onPointerMove, true);
+    window.addEventListener('pointerup', onPointerUpOrCancel, true);
+    window.addEventListener('pointercancel', onPointerUpOrCancel, true);
+
+    return () => {
+      cancelCornerPending();
+      cancelVertexPending();
+      el.removeEventListener('pointerdown', onPointerDown, true);
+      el.removeEventListener('mousedown', blockFabricDownIfHandleDrag, true);
+      el.removeEventListener('touchstart', blockFabricDownIfHandleDrag, true);
+      window.removeEventListener('pointermove', onPointerMove, true);
+      window.removeEventListener('pointerup', onPointerUpOrCancel, true);
+      window.removeEventListener('pointercancel', onPointerUpOrCancel, true);
+    };
+  }, [pushHistory, redrawBackground, refreshSelectionInfo, syncFabricToolState]);
+
+  // Actions: Copy, Paste, Delete, Keyboard Shortcuts
+  const handleDeleteSelected = useCallback(() => {
+    const fc = fabricRef.current;
+    if (!fc) return;
+    const active = fc.getActiveObject();
+    if (!active) return;
+
+    if (active.type === 'activeSelection' && Array.isArray(active._objects)) {
+      const items = [...active._objects];
+      fc.discardActiveObject();
+      items.forEach((o: any) => fc.remove(o));
+    } else {
+      fc.remove(active);
+      fc.discardActiveObject();
+    }
+    setSelectedInfo(null);
+    fc.requestRenderAll();
+    pushHistory();
+  }, [pushHistory]);
+
+  const handleDuplicateSelected = useCallback(() => {
+    const fc = fabricRef.current;
+    if (!fc) return;
+    const active = fc.getActiveObject();
+    if (!active) return;
+    active.clone((cloned: any) => {
+      fc.discardActiveObject();
+      cloned.set({
+        left: (cloned.left || 0) + 20,
+        top: (cloned.top || 0) + 20,
+        evented: true,
+        selectable: true,
+      });
+      if (cloned.type === 'activeSelection') {
+        cloned.canvas = fc;
+        cloned.forEachObject((o: any) => fc.add(o));
+        cloned.setCoords();
+      } else {
+        fc.add(cloned);
+      }
+      fc.setActiveObject(cloned);
+      refreshSelectionInfo();
+      fc.requestRenderAll();
+      pushHistory();
+    }, CUSTOM_FABRIC_PROPS);
+  }, [pushHistory, refreshSelectionInfo]);
+
+  const handleAddImageDataUrl = useCallback(
+    (dataUrl: string) => {
+      const fc = fabricRef.current;
+      const fabric = getFabric();
+      if (!fc || !fabric) return;
+      void compressDataUrlToMaxBytes(dataUrl).then((finalUrl) => {
+        fabric.Image.fromURL(
+          finalUrl,
+          (img: any) => {
+            if (!img) return;
+            const vpt = fc.viewportTransform || [1, 0, 0, 1, 0, 0];
+            const zoom = fc.getZoom() || 1;
+            const cx = (window.innerWidth / 2 - vpt[4]) / zoom;
+            const cy = (window.innerHeight / 2 - vpt[5]) / zoom;
+            const maxWorldDim = Math.min(window.innerWidth, window.innerHeight) * 0.65 / zoom;
+            const scale = Math.min(
+              1,
+              maxWorldDim / Math.max(1, img.width || 1, img.height || 1)
+            );
+            img.set({
+              left: cx,
+              top: cy,
+              originX: 'center',
+              originY: 'center',
+              scaleX: scale,
+              scaleY: scale,
+              cornerColor: '#2563EB',
+              borderColor: '#2563EB',
+            });
+            fc.add(img);
+            setActiveMode('select');
+            fc.setActiveObject(img);
+            refreshSelectionInfo();
+            fc.requestRenderAll();
+            pushHistory();
+          },
+          { crossOrigin: 'anonymous' }
+        );
+      });
+    },
+    [pushHistory, refreshSelectionInfo]
+  );
+
+  const handleAddText = useCallback(
+    (payload: { text: string; color: string; fontFamily: string; fontSize: number }) => {
+      const fc = fabricRef.current;
+      const fabric = getFabric();
+      if (!fc || !fabric) return;
+
+      const vpt = fc.viewportTransform || [1, 0, 0, 1, 0, 0];
+      const zoom = fc.getZoom() || 1;
+      const cx = (window.innerWidth / 2 - vpt[4]) / zoom;
+      const cy = (window.innerHeight / 2 - vpt[5]) / zoom;
+
+      const itext = new fabric.IText(payload.text, {
+        left: cx,
+        top: cy,
+        originX: 'center',
+        originY: 'center',
+        fill: payload.color,
+        fontFamily: payload.fontFamily,
+        fontSize: payload.fontSize,
+        cornerColor: '#2563EB',
+        borderColor: '#2563EB',
+      });
+      fc.add(itext);
+      setActivePopover(null);
+      setActiveMode('select');
+      fc.setActiveObject(itext);
+      refreshSelectionInfo();
+      fc.requestRenderAll();
+      pushHistory();
+      trackFunction('add_text', 'text', { font_family: payload.fontFamily });
+    },
+    [pushHistory, refreshSelectionInfo]
+  );
+
+  const handleAddStamp = useCallback(
+    (stamp: StampDefinition, color: string) => {
+      const fc = fabricRef.current;
+      const fabric = getFabric();
+      if (!fc || !fabric) return;
+
+      const svgStr = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${stamp.paths}</svg>`;
+      fabric.loadSVGFromString(svgStr, (objects: any[], options: any) => {
+        if (!objects || objects.length === 0) return;
+        const grp = fabric.util.groupSVGElements(objects, options);
+        const vpt = fc.viewportTransform || [1, 0, 0, 1, 0, 0];
+        const zoom = fc.getZoom() || 1;
+        const cx = (window.innerWidth / 2 - vpt[4]) / zoom;
+        const cy = (window.innerHeight / 2 - vpt[5]) / zoom;
+        const scale = 3.2 / zoom;
+        grp.set({
+          left: cx,
+          top: cy,
+          originX: 'center',
+          originY: 'center',
+          scaleX: scale,
+          scaleY: scale,
+          isStampGroup: true,
+          strokeColorHex: color,
+          strokeOpacity: 1,
+          strokeWidth: 2,
+          cornerColor: '#2563EB',
+          borderColor: '#2563EB',
+        });
+        fc.add(grp);
+        setActivePopover(null);
+        setActiveMode('select');
+        fc.setActiveObject(grp);
+        refreshSelectionInfo();
+        fc.requestRenderAll();
+        pushHistory();
+        trackFunction('add_stamp', 'stamps', { stamp_id: stamp.id });
+      });
+    },
+    [pushHistory, refreshSelectionInfo]
+  );
+
+  const handleAddEmoji = useCallback(
+    (emoji: EmojiDefinition) => {
+      const fc = fabricRef.current;
+      const fabric = getFabric();
+      if (!fc || !fabric) return;
+      const vpt = fc.viewportTransform || [1, 0, 0, 1, 0, 0];
+      const zoom = fc.getZoom() || 1;
+      const cx = (window.innerWidth / 2 - vpt[4]) / zoom;
+      const cy = (window.innerHeight / 2 - vpt[5]) / zoom;
+
+      const txt = new fabric.IText(emoji.char, {
+        left: cx,
+        top: cy,
+        originX: 'center',
+        originY: 'center',
+        fontSize: Math.round(56 / Math.max(0.4, zoom)),
+        fontFamily:
+          '"Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", "Twemoji Mozilla", sans-serif',
+        cornerColor: '#2563EB',
+        borderColor: '#2563EB',
+      });
+      fc.add(txt);
+      setActivePopover(null);
+      setActiveMode('select');
+      fc.setActiveObject(txt);
+      refreshSelectionInfo();
+      fc.requestRenderAll();
+      pushHistory();
+      trackFunction('add_emoji', 'stamps', { emoji: emoji.char });
+    },
+    [pushHistory, refreshSelectionInfo]
+  );
+
+  const handleSelectAll = useCallback(() => {
+    const fc = fabricRef.current;
+    const fabric = getFabric();
+    if (!fc || !fabric) return;
+    bezierEditRef.current = null;
+    if (contourPointsRef.current.length > 0) {
+      polylineHoverPtRef.current = null;
+      setContourPoints([]);
+    }
+    const objs = fc
+      .getObjects()
+      .filter((o: any) => !o.excludeFromExport && !o.isEraserPath);
+    if (objs.length === 0) return;
+    setActiveMode('select');
+    fc.discardActiveObject();
+    if (objs.length === 1) {
+      fc.setActiveObject(objs[0]);
+    } else {
+      const sel = new fabric.ActiveSelection(objs, { canvas: fc });
+      fc.setActiveObject(sel);
+    }
+    fc.requestRenderAll();
+    refreshSelectionInfo();
+    showToast(t('selectedAllToast'));
+    trackFunction('select_all', 'selection', { count: objs.length });
+  }, [refreshSelectionInfo, showToast, t]);
+
+  // Keyboard shortcuts (Ctrl+A, Ctrl+Z, Ctrl+Y, Delete, Space Pan, Ctrl+C / Ctrl+V)
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const isEditingInput =
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable);
+      const fc = fabricRef.current;
+      const activeObj = fc?.getActiveObject();
+      if (isEditingInput || activeObj?.isEditing) return;
+
+      if (e.code === 'Space') {
+        spacePressedRef.current = true;
+        if (fc) fc.defaultCursor = 'grab';
+        return;
+      }
+
+      if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'a' || e.code === 'KeyA')) {
         e.preventDefault();
         handleSelectAll();
         return;
       }
 
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
+      if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'z' || e.code === 'KeyZ')) {
         e.preventDefault();
         if (e.shiftKey) {
           handleRedo();
@@ -3164,2161 +3426,1047 @@ export default function App() {
         return;
       }
 
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'y') {
+      if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'y' || e.code === 'KeyY')) {
         e.preventDefault();
         handleRedo();
         return;
       }
 
-      if (e.key === 'Delete' || e.key === 'Backspace') {
-        const fc = fabricCanvasRef.current;
-        if (!fc) return;
-        const active = fc.getActiveObjects();
-        if (
-          active &&
-          active.length > 0 &&
-          !bezierSessionRef.current &&
-          !contourSessionRef.current
-        ) {
-          e.preventDefault();
-          active.forEach((obj: any) => fc.remove(obj));
-          fc.discardActiveObject();
-          fc.requestRenderAll();
-          setSelectedInfo(null);
-          setObjectEditorOpen(false);
-          saveHistory();
-          trackFunction('delete_selected_shortcut', 'edit', { count: active.length });
+      if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'c' || e.code === 'KeyC')) {
+        if (activeObj) {
+          const objs =
+            activeObj.type === 'activeSelection' && Array.isArray(activeObj._objects)
+              ? activeObj._objects
+              : [activeObj];
+          clipboardJsonRef.current = objs.map((o: any) => o.toObject(CUSTOM_FABRIC_PROPS));
         }
         return;
       }
 
-      if (e.key === 'Escape') {
-        if (bezierSessionRef.current) {
-          finalizeBezierSession(false);
+      if ((e.ctrlKey || e.metaKey) && (e.key.toLowerCase() === 'v' || e.code === 'KeyV')) {
+        if (clipboardJsonRef.current && clipboardJsonRef.current.length > 0 && fc) {
+          const fabric = getFabric();
+          fabric.util.enlivenObjects(clipboardJsonRef.current, (enlivened: any[]) => {
+            if (!enlivened || enlivened.length === 0) return;
+            fc.discardActiveObject();
+            enlivened.forEach((o) => {
+              o.set({ left: (o.left || 0) + 24, top: (o.top || 0) + 24 });
+              fc.add(o);
+            });
+            if (enlivened.length === 1) {
+              fc.setActiveObject(enlivened[0]);
+            }
+            refreshSelectionInfo();
+            fc.requestRenderAll();
+            pushHistory();
+            showToast(t('pastedToast'));
+          });
         }
-        if (contourSessionRef.current) {
-          finalizeContourSession(true);
+        return;
+      }
+
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (activeObj) {
+          e.preventDefault();
+          handleDeleteSelected();
         }
-        if (isDrawingLassoRef.current) {
-          isDrawingLassoRef.current = false;
-          lassoPointsRef.current = [];
-          if (lassoRafRef.current !== null) {
-            window.cancelAnimationFrame(lassoRafRef.current);
-            lassoRafRef.current = null;
-          }
-          fabricCanvasRef.current?.requestRenderAll();
-        }
-        if (activeModeRef.current === 'lasso') {
-          activeModeRef.current = 'select';
-          setActiveMode('select');
-          syncFabricToolState();
-        }
-        setCanvasPasteMenu(null);
-        setClearConfirmOpen(false);
-        setActivePopover(null);
-        setObjectEditorOpen(false);
-        setHelpOpen(false);
-      } else if (e.key === 'Enter' && bezierSessionRef.current) {
-        e.preventDefault();
-        finalizeBezierSession(false);
-      } else if (e.key === 'Enter' && contourSessionRef.current) {
-        e.preventDefault();
-        finalizeContourSession(false);
       }
     };
 
-    const handleKeyUp = (e: KeyboardEvent) => {
+    const onKeyUp = (e: KeyboardEvent) => {
       if (e.code === 'Space') {
-        isSpaceHeldRef.current = false;
-        isPanningDragRef.current = false;
-        setIsSpacePanning(false);
+        spacePressedRef.current = false;
+        const fc = fabricRef.current;
+        if (fc) {
+          fc.defaultCursor = activeModeRef.current === 'select' ? 'default' : 'crosshair';
+        }
       }
     };
 
-    window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keyup', handleKeyUp);
+    const onPaste = (e: ClipboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (item.type.startsWith('image/')) {
+          const file = item.getAsFile();
+          if (file) {
+            e.preventDefault();
+            void downscaleImageFileToDataUrl(file).then((url) => {
+              handleAddImageDataUrl(url);
+              showToast(t('pastedToast'));
+            });
+            return;
+          }
+        }
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('paste', onPaste);
     return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('paste', onPaste);
     };
   }, [
-    finalizeBezierSession,
-    finalizeContourSession,
+    handleAddImageDataUrl,
+    handleDeleteSelected,
     handleRedo,
     handleSelectAll,
     handleUndo,
-    saveHistory,
-    syncFabricToolState,
+    pushHistory,
+    refreshSelectionInfo,
+    showToast,
+    t,
   ]);
 
-  // Track initial workspace screen and contextual floating bars
-  useEffect(() => {
-    trackWindowOpen('canvas_workspace', {
-      first_launch: helpOpen,
-      language: resolvedLang,
-      bg_mode: bgConfig.mode,
-      canvas_preset: canvasSize.preset,
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    if (cornerRoundHud) {
-      trackWindowOpen('corner_round_hud', { percent: cornerRoundHud.percent });
-      return () => trackWindowClose('corner_round_hud');
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [Boolean(cornerRoundHud)]);
-
-  const hasRotationHud = Boolean(rotatingAngleHud && !cornerRoundHud);
-  useEffect(() => {
-    if (hasRotationHud) {
-      trackWindowOpen('rotating_angle_hud');
-      return () => trackWindowClose('rotating_angle_hud');
-    }
-  }, [hasRotationHud]);
-
-  useEffect(() => {
-    if (isEditingBezier) {
-      trackWindowOpen('bezier_editor_bar');
-      return () => trackWindowClose('bezier_editor_bar');
-    }
-  }, [isEditingBezier]);
-
-  useEffect(() => {
-    if (isEditingContour) {
-      trackWindowOpen('contour_editor_bar');
-      return () => trackWindowClose('contour_editor_bar');
-    }
-  }, [isEditingContour]);
-
-  const hasQuickBar = Boolean(
-    !isEditingBezier && !isEditingContour && activeMode === 'select' && selectedInfo
-  );
-  useEffect(() => {
-    if (hasQuickBar && selectedInfo) {
-      trackWindowOpen('object_quick_bar', {
-        object_kind: selectedInfo.kind,
-        selection_count: selectedInfo.selectionCount,
-      });
-      return () => trackWindowClose('object_quick_bar');
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasQuickBar]);
-
-  const hasLassoBar = Boolean(!isEditingBezier && !isEditingContour && activeMode === 'lasso');
-  useEffect(() => {
-    if (hasLassoBar) {
-      trackWindowOpen('lasso_mode_bar');
-      return () => trackWindowClose('lasso_mode_bar');
-    }
-  }, [hasLassoBar]);
-
-  useEffect(() => {
-    if (clearConfirmOpen) {
-      trackWindowOpen('clear_confirm_dialog');
-      return () => trackWindowClose('clear_confirm_dialog');
-    }
-  }, [clearConfirmOpen]);
-
-  const hasCanvasPasteMenu = Boolean(canvasPasteMenu && activeMode === 'select');
-  useEffect(() => {
-    if (hasCanvasPasteMenu) {
-      trackWindowOpen('canvas_paste_menu');
-      return () => trackWindowClose('canvas_paste_menu');
-    }
-  }, [hasCanvasPasteMenu]);
-
-  // Sidebar & Tool Handlers
-  const handleToggleSidebar = () => {
-    setCanvasPasteMenu(null);
-    setSidebarOpen((prev) => {
-      const next = !prev;
-      if (prev) {
-        setActivePopover(null);
-      } else {
-        setObjectEditorOpen(false);
-      }
-      trackFunction('toggle_sidebar', 'ui', { is_open: next });
-      return next;
-    });
+  // Selection modification handlers (shared between ShapesPopover & ObjectEditorPopover)
+  const getTargetObjects = (): any[] => {
+    const fc = fabricRef.current;
+    if (!fc) return [];
+    const active = fc.getActiveObject();
+    if (!active) return [];
+    return active.type === 'activeSelection' && Array.isArray(active._objects)
+      ? active._objects
+      : [active];
   };
 
-  const handleTogglePopover = (pop: ActivePopover) => {
-    setCanvasPasteMenu(null);
-    setObjectEditorOpen(false);
-    setActivePopover((prev) => {
-      const next = prev === pop ? null : pop;
-      trackFunction('toggle_popover', 'ui', { popover: pop || 'none', is_open: Boolean(next) });
-      return next;
-    });
-  };
-
-  const ensureOfflineBlob = useCallback(async (): Promise<Blob | null> => {
-    if (offlineHtmlBlobRef.current) return offlineHtmlBlobRef.current;
-    if (typeof window === 'undefined' || window.location.protocol === 'file:') {
-      return null;
-    }
-    try {
-      const res = await fetch('./bestpaint-offline.html', { cache: 'no-store' });
-      if (!res.ok) return null;
-      const htmlText = await res.text();
-      if (htmlText.length < 200000 || !/^<!doctype html/i.test(htmlText.trimStart())) {
-        return null;
-      }
-      const blob = new Blob([htmlText], { type: 'text/html;charset=utf-8' });
-      offlineHtmlBlobRef.current = blob;
-      return blob;
-    } catch {
-      return null;
-    }
-  }, []);
-
-  useEffect(() => {
-    if (activePopover === 'actions') {
-      void ensureOfflineBlob();
-    }
-  }, [activePopover, ensureOfflineBlob]);
-
-  const showOfflineSavedToast = useCallback(() => {
-    setActivePopover(null);
-    setOfflineToast(true);
-    if (offlineToastTimerRef.current) {
-      window.clearTimeout(offlineToastTimerRef.current);
-    }
-    offlineToastTimerRef.current = window.setTimeout(() => {
-      setOfflineToast(false);
-      offlineToastTimerRef.current = null;
-    }, 2600);
-  }, []);
-
-  const handleTriggerOfflineDownload = useCallback(() => {
-    if (typeof window === 'undefined' || window.location.protocol === 'file:') {
-      return;
-    }
-
-    const triggerBlobDownload = (blob: Blob) => {
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = 'index.html';
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.setTimeout(() => URL.revokeObjectURL(url), 4000);
-      showOfflineSavedToast();
-      trackFunction('download_offline_html', 'export');
-    };
-
-    if (offlineHtmlBlobRef.current) {
-      triggerBlobDownload(offlineHtmlBlobRef.current);
-      return;
-    }
-
-    void ensureOfflineBlob().then((blob) => {
-      if (blob) {
-        triggerBlobDownload(blob);
-      }
-    });
-  }, [ensureOfflineBlob, showOfflineSavedToast]);
-
-  // Automatic version/build checker for deployed updates
-  useEffect(() => {
-    if (typeof window === 'undefined' || window.location.protocol === 'file:') {
-      return;
-    }
-
-    let cancelled = false;
-    const checkForUpdate = async () => {
-      if (cancelled || navigator.onLine === false) return;
-      try {
-        const res = await fetch(`./version.json?t=${Date.now()}`, {
-          cache: 'no-store',
-        });
-        if (!res.ok) return;
-        const remote = (await res.json()) as { version?: string; buildId?: string };
-        const remoteBuildKey = remote.buildId || remote.version;
-        if (!remoteBuildKey) return;
-
-        const changed =
-          (remote.version && remote.version !== APP_VERSION) ||
-          (remote.buildId && remote.buildId !== APP_BUILD_ID);
-
-        if (changed) {
-          const alreadyReloaded = window.sessionStorage.getItem('zp_reloaded_build');
-          if (alreadyReloaded === remoteBuildKey) return;
-          window.sessionStorage.setItem('zp_reloaded_build', remoteBuildKey);
-
-          if ('caches' in window && typeof window.caches.keys === 'function') {
-            const keys = await window.caches.keys();
-            await Promise.all(keys.map((k) => window.caches.delete(k)));
-          }
-          trackFunction('auto_update_reload', 'app', {
-            from_version: APP_VERSION,
-            to_version: remote.version || remoteBuildKey,
-          });
-          window.location.reload();
-        }
-      } catch {
-        // Offline or transient fetch failure
-      }
-    };
-
-    const initialTimer = window.setTimeout(() => {
-      void checkForUpdate();
-    }, 1500);
-    const intervalId = window.setInterval(() => {
-      void checkForUpdate();
-    }, 60000);
-    const handleVisibility = () => {
-      if (document.visibilityState === 'visible') {
-        void checkForUpdate();
-      }
-    };
-    const handleOnline = () => {
-      void checkForUpdate();
-    };
-
-    document.addEventListener('visibilitychange', handleVisibility);
-    window.addEventListener('online', handleOnline);
-
-    return () => {
-      cancelled = true;
-      window.clearTimeout(initialTimer);
-      window.clearInterval(intervalId);
-      document.removeEventListener('visibilitychange', handleVisibility);
-      window.removeEventListener('online', handleOnline);
-    };
-  }, []);
-
-  const handleToggleDontShowTutorial = useCallback((next: boolean) => {
-    setDontShowTutorialAgain(next);
-    trackFunction('help_toggle_dont_show_again', 'help', { dont_show: next });
-    if (typeof window === 'undefined') return;
-    try {
-      if (next) {
-        window.localStorage.setItem(HIDE_TUTORIAL_STORAGE_KEY, '1');
-      } else {
-        window.localStorage.removeItem(HIDE_TUTORIAL_STORAGE_KEY);
-      }
-    } catch {
-      // ignore storage errors
-    }
-  }, []);
-
-  const handleSelectMode = (mode: DrawMode) => {
-    setCanvasPasteMenu(null);
-    if (bezierSessionRef.current && mode !== 'bezier') {
-      finalizeBezierSession(false);
-    }
-    if (contourSessionRef.current && mode !== 'line') {
-      finalizeContourSession(false);
-    }
-    if (mode !== 'select') {
-      setObjectEditorOpen(false);
-    }
-    setActiveMode(mode);
-    trackFunction('select_draw_mode', 'tools', { mode });
-  };
-
-  const showPastedToast = useCallback(() => {
-    setPasteErrorKind(null);
-    setPastedToast(true);
-    if (pastedToastTimerRef.current) {
-      window.clearTimeout(pastedToastTimerRef.current);
-    }
-    pastedToastTimerRef.current = window.setTimeout(() => {
-      setPastedToast(false);
-      pastedToastTimerRef.current = null;
-    }, 1800);
-  }, []);
-
-  const showPasteErrorToast = useCallback((kind: 'empty' | 'blocked' = 'empty') => {
-    setPastedToast(false);
-    setPasteErrorKind(kind);
-    trackFunction('paste_error', 'clipboard', { kind });
-    if (pasteErrorToastTimerRef.current) {
-      window.clearTimeout(pasteErrorToastTimerRef.current);
-    }
-    pasteErrorToastTimerRef.current = window.setTimeout(() => {
-      setPasteErrorKind(null);
-      pasteErrorToastTimerRef.current = null;
-    }, 2600);
-  }, []);
-
-  useEffect(() => {
-    if (canvasPasteMenu?.waitingNativePaste) {
-      const raf = window.requestAnimationFrame(() => {
-        pasteCatcherRef.current?.focus({ preventScroll: true });
-      });
-      return () => window.cancelAnimationFrame(raf);
-    }
-  }, [canvasPasteMenu?.waitingNativePaste]);
-
-  const getViewportWorldCenter = useCallback((fc: any, fabric: any): Point => {
-    const center = fc.getCenter();
-    const vpt = fc.viewportTransform || [1, 0, 0, 1, 0, 0];
-    const inv = fabric.util.invertTransform(vpt);
-    return fabric.util.transformPoint(new fabric.Point(center.left, center.top), inv);
-  }, []);
-
-  const pasteInternalObjectAt = useCallback(
-    (targetWorldPt?: Point) => {
-      const fc = fabricCanvasRef.current;
+  const handleUpdateSelectedStroke = useCallback(
+    (patch: {
+      color?: string;
+      opacity?: number;
+      width?: number;
+      pattern?: LinePattern;
+      doubleLine?: boolean;
+      brushType?: BrushType;
+    }) => {
+      const fc = fabricRef.current;
       const fabric = getFabric();
-      if (!fc || !fabric || !internalClipboardObjRef.current) return false;
+      if (!fc || !fabric) return;
+      const targets = getTargetObjects();
+      if (targets.length === 0) return;
 
-      if (bezierSessionRef.current) finalizeBezierSession(false);
-      if (contourSessionRef.current) finalizeContourSession(false);
+      targets.forEach((obj) => {
+        if (obj.isTexturedBrushStroke) {
+          const nextColor = patch.color ?? obj.strokeColorHex ?? '#0F172A';
+          const nextOp = patch.opacity ?? obj.strokeOpacity ?? 1;
+          obj.set({
+            strokeColorHex: nextColor,
+            strokeOpacity: nextOp,
+            ...(patch.opacity !== undefined ? { opacity: nextOp } : {}),
+            dirty: true,
+          });
+          if (patch.color !== undefined && fabric.Image?.filters?.BlendColor) {
+            obj.filters = [
+              new fabric.Image.filters.BlendColor({
+                color: nextColor,
+                mode: 'tint',
+                alpha: 1,
+              }),
+            ];
+            if (typeof obj.applyFilters === 'function') {
+              obj.applyFilters();
+            }
+          }
+          return;
+        }
 
-      pasteOffsetCountRef.current += 1;
-      const offset = 20 * pasteOffsetCountRef.current;
+        if (obj.isStampGroup && Array.isArray(obj._objects)) {
+          const nextColor = patch.color ?? obj.strokeColorHex ?? '#0F172A';
+          const nextOp = patch.opacity ?? obj.strokeOpacity ?? 1;
+          const nextW = patch.width ?? obj.strokeWidth ?? 2;
+          const rgba = nextW > 0 ? applyColorOpacity(nextColor, nextOp) : null;
+          obj.set({
+            strokeColorHex: nextColor,
+            strokeOpacity: nextOp,
+            strokeWidth: nextW,
+            strokePattern: patch.pattern ?? obj.strokePattern ?? 'solid',
+            doubleLine: patch.doubleLine ?? obj.doubleLine ?? false,
+          });
+          obj._objects.forEach((child: any) => {
+            child.set({
+              stroke: rgba,
+              strokeWidth: nextW,
+              strokeDashArray: getScaledDashArray(patch.pattern ?? obj.strokePattern ?? 'solid', Math.max(1, nextW)) || undefined,
+              dirty: true,
+            });
+          });
+          return;
+        }
 
-      internalClipboardObjRef.current.clone((pasted: any) => {
-        fc.discardActiveObject();
-        pasted.set({
-          evented: true,
-          selectable: true,
+        const nextColor = patch.color ?? obj.strokeColorHex ?? '#0F172A';
+        const nextOp = patch.opacity ?? obj.strokeOpacity ?? 1;
+        const nextW = patch.width ?? obj.strokeWidth ?? 3;
+        const nextPat = patch.pattern ?? obj.strokePattern ?? 'solid';
+        const nextDouble = patch.doubleLine ?? obj.doubleLine ?? false;
+        const nextBrush = patch.brushType ?? obj.brushType;
+
+        if (obj.isGridRect && Array.isArray(obj._objects)) {
+          const rgba = applyColorOpacity(nextColor, nextOp);
+          const dash = getScaledDashArray(nextPat, Math.max(1, nextW));
+          obj.set({
+            strokeColorHex: nextColor,
+            strokeOpacity: nextOp,
+            strokeWidth: Math.max(1, nextW),
+            strokePattern: nextPat,
+            doubleLine: nextDouble,
+          });
+          obj._objects.forEach((c: any, idx: number) => {
+            c.set({
+              stroke: rgba,
+              strokeWidth: idx === 0 ? Math.max(1, nextW) : Math.max(1, nextW * 0.75),
+              strokeDashArray: dash || undefined,
+              dirty: true,
+            });
+          });
+          return;
+        }
+
+        obj.set({
+          strokeColorHex: nextColor,
+          strokeOpacity: nextOp,
+          strokeWidth: nextW,
+          stroke: nextW > 0 ? applyColorOpacity(nextColor, nextOp) : null,
+          strokePattern: nextPat,
+          strokeDashArray: getScaledDashArray(nextPat, Math.max(1, nextW)) || undefined,
+          doubleLine: nextDouble,
+          ...(nextBrush ? { brushType: nextBrush } : {}),
+          dirty: true,
+        });
+
+        if (nextBrush === 'soft') {
+          obj.set({
+            shadow: new fabric.Shadow({
+              blur: Math.max(4, nextW * 0.9),
+              offsetX: 0,
+              offsetY: 0,
+              color: applyColorOpacity(nextColor, Math.min(1, nextOp * 0.85)),
+              affectStroke: true,
+            }),
+          });
+        } else if (nextBrush === 'standard') {
+          obj.set({ shadow: null });
+        }
+      });
+
+      fc.requestRenderAll();
+      refreshSelectionInfo();
+      pushHistory();
+    },
+    [pushHistory, refreshSelectionInfo]
+  );
+
+  const handleUpdateSelectedFill = useCallback(
+    (nextFill: FillSettings) => {
+      const fc = fabricRef.current;
+      if (!fc) return;
+      const targets = getTargetObjects();
+      targets.forEach((obj) => {
+        if (obj.isGridRect && Array.isArray(obj._objects) && obj._objects[0]) {
+          obj.set({ fillMeta: { ...nextFill } });
+          applyFillToObject(obj._objects[0], nextFill, fc);
+        } else {
+          applyFillToObject(obj, nextFill, fc);
+        }
+      });
+      fc.requestRenderAll();
+      refreshSelectionInfo();
+      pushHistory();
+    },
+    [pushHistory, refreshSelectionInfo]
+  );
+
+  const handleUpdateSelectedGrid = useCallback(
+    (nextGrid: RectGridConfig) => {
+      const fc = fabricRef.current;
+      const fabric = getFabric();
+      if (!fc || !fabric) return;
+      const active = fc.getActiveObject();
+      if (!active) return;
+
+      const center = active.getCenterPoint();
+      const worldW = (active.width || 100) * Math.abs(active.scaleX || 1);
+      const worldH = (active.height || 100) * Math.abs(active.scaleY || 1);
+      const st: StrokeSettings = {
+        color: active.strokeColorHex || strokeRef.current.color,
+        opacity: active.strokeOpacity ?? strokeRef.current.opacity,
+        width: active.strokeWidth ?? strokeRef.current.width,
+        pattern: active.strokePattern || 'solid',
+        brushType: 'standard',
+        doubleLine: Boolean(active.doubleLine),
+      };
+      const fl: FillSettings = active.fillMeta ? { ...active.fillMeta } : { ...fillRef.current };
+
+      let replacement: any;
+      if (nextGrid.enabled) {
+        replacement = createGridRectGroup(
+          fabric,
+          center.x - worldW / 2,
+          center.y - worldH / 2,
+          worldW,
+          worldH,
+          nextGrid.rows,
+          nextGrid.cols,
+          st,
+          fl
+        );
+      } else {
+        replacement = new fabric.Rect({
+          left: center.x,
+          top: center.y,
+          width: worldW,
+          height: worldH,
+          originX: 'center',
+          originY: 'center',
+          fill: buildFillValue(fl, worldW, worldH),
+          fillMeta: { ...fl },
+          stroke: st.width > 0 ? applyColorOpacity(st.color, st.opacity) : null,
+          strokeColorHex: st.color,
+          strokeOpacity: st.opacity,
+          strokeWidth: st.width,
+          strokeDashArray: getScaledDashArray(st.pattern, Math.max(1, st.width)) || undefined,
+          strokePattern: st.pattern,
+          doubleLine: st.doubleLine,
+          strokeUniform: true,
           cornerColor: '#2563EB',
           borderColor: '#2563EB',
         });
-        if (targetWorldPt && typeof pasted.setPositionByOrigin === 'function') {
-          pasted.setPositionByOrigin(
-            new fabric.Point(targetWorldPt.x, targetWorldPt.y),
-            'center',
-            'center'
-          );
-        } else {
-          pasted.set({
-            left: (pasted.left || 0) + offset,
-            top: (pasted.top || 0) + offset,
-          });
-        }
-        if (pasted.type === 'polygon' && pasted.basePathOffset) {
-          pasted.set({
-            width: pasted.baseWidth ?? pasted.width,
-            height: pasted.baseHeight ?? pasted.height,
-            pathOffset: new fabric.Point(pasted.basePathOffset.x, pasted.basePathOffset.y),
-            dirty: true,
-          });
-        }
-        if (pasted.type === 'activeSelection') {
-          pasted.canvas = fc;
-          pasted.forEachObject((obj: any) => {
-            if (obj.fillMeta?.mode === 'photo') {
-              refreshObjectPhotoFill(obj, fc);
-            }
-            attachControlsToObject(obj);
-            fc.add(obj);
-          });
-          pasted.setCoords();
-        } else {
-          if (pasted.fillMeta?.mode === 'photo') {
-            refreshObjectPhotoFill(pasted, fc);
-          }
-          attachControlsToObject(pasted);
-          fc.add(pasted);
-        }
+      }
 
-        setIsCanvasEmpty(false);
-        setActivePopover(null);
-        activeModeRef.current = 'select';
-        setActiveMode('select');
-        syncFabricToolState();
-        fc.setActiveObject(pasted);
-        pasted.setCoords();
-        fc.requestRenderAll();
-        refreshEmptyState();
-        refreshSelectedInfo();
-        saveHistory();
-        showPastedToast();
-        trackFunction('paste_object', 'clipboard', {
-          source: targetWorldPt ? 'long_press_canvas' : 'shortcut',
-        });
-      }, CUSTOM_JSON_PROPS);
-      return true;
-    },
-    [
-      attachControlsToObject,
-      finalizeBezierSession,
-      finalizeContourSession,
-      refreshEmptyState,
-      refreshSelectedInfo,
-      saveHistory,
-      showPastedToast,
-      syncFabricToolState,
-    ]
-  );
-
-  const pasteImageDataUrlAt = useCallback(
-    (dataUrl: string, targetWorldPt?: Point) => {
-      const fc = fabricCanvasRef.current;
-      const fabric = getFabric();
-      if (!fc || !fabric || !dataUrl) return false;
-
-      if (bezierSessionRef.current) finalizeBezierSession(false);
-      if (contourSessionRef.current) finalizeContourSession(false);
-
-      fabric.Image.fromURL(
-        dataUrl,
-        (img: any) => {
-          if (!img) return;
-          const zoom = fc.getZoom() || 1;
-          const maxW = (fc.getWidth() * 0.65) / zoom;
-          const maxH = (fc.getHeight() * 0.65) / zoom;
-          const scale = Math.min(1, maxW / (img.width || 1), maxH / (img.height || 1));
-          const placePt = targetWorldPt ?? getViewportWorldCenter(fc, fabric);
-
-          img.set({
-            left: placePt.x,
-            top: placePt.y,
-            originX: 'center',
-            originY: 'center',
-            scaleX: scale,
-            scaleY: scale,
-            strokeUniform: true,
-            strokeWidth: 0,
-            stroke: '#000000',
-            strokeColorHex: '#000000',
-            strokeOpacity: 1,
-            selectable: true,
-            evented: true,
-          });
-
-          setIsCanvasEmpty(false);
-          setActivePopover(null);
-          activeModeRef.current = 'select';
-          setActiveMode('select');
-          fc.add(img);
-          syncFabricToolState();
-          fc.setActiveObject(img);
-          img.setCoords();
-          fc.requestRenderAll();
-          refreshEmptyState();
-          refreshSelectedInfo();
-          saveHistory();
-          showPastedToast();
-          trackFunction('paste_image', 'clipboard', {
-            source: targetWorldPt ? 'long_press_canvas' : 'shortcut',
-          });
-        },
-        { crossOrigin: 'anonymous' }
-      );
-      return true;
-    },
-    [
-      finalizeBezierSession,
-      finalizeContourSession,
-      getViewportWorldCenter,
-      refreshEmptyState,
-      refreshSelectedInfo,
-      saveHistory,
-      showPastedToast,
-      syncFabricToolState,
-    ]
-  );
-
-  const pasteImageBlobAt = useCallback(
-    (imageBlob: Blob, targetWorldPt?: Point) => {
-      const reader = new FileReader();
-      reader.onload = (ev) => {
-        const dataUrl = ev.target?.result as string;
-        if (dataUrl) {
-          pasteImageDataUrlAt(dataUrl, targetWorldPt);
-        }
-      };
-      reader.readAsDataURL(imageBlob);
-      return true;
-    },
-    [pasteImageDataUrlAt]
-  );
-
-  const pastePlainTextAt = useCallback(
-    (rawText: string, targetWorldPt?: Point) => {
-      const fc = fabricCanvasRef.current;
-      const fabric = getFabric();
-      const trimmed = rawText.trim();
-      if (!fc || !fabric || !trimmed) return false;
-
-      if (bezierSessionRef.current) finalizeBezierSession(false);
-      if (contourSessionRef.current) finalizeContourSession(false);
-
-      const zoom = fc.getZoom() || 1;
-      const placePt = targetWorldPt ?? getViewportWorldCenter(fc, fabric);
-      const fontSize = Math.max(18, Math.min(96, Math.round(28 / Math.max(0.25, zoom))));
-
-      const textObj = new fabric.IText(trimmed, {
-        left: placePt.x,
-        top: placePt.y,
-        originX: 'center',
-        originY: 'center',
-        fontFamily: 'Inter, system-ui, sans-serif',
-        fontSize,
-        fill: strokeRef.current.color,
-        editable: true,
-        hasControls: true,
-        hasBorders: true,
-        selectable: true,
-        evented: true,
-      });
-
-      setIsCanvasEmpty(false);
-      setActivePopover(null);
-      activeModeRef.current = 'select';
-      setActiveMode('select');
-      fc.add(textObj);
-      syncFabricToolState();
-      fc.setActiveObject(textObj);
-      textObj.setCoords();
+      replacement.set({ angle: active.angle || 0 });
+      fc.remove(active);
+      fc.add(replacement);
+      fc.setActiveObject(replacement);
       fc.requestRenderAll();
-      refreshEmptyState();
-      refreshSelectedInfo();
-      saveHistory();
-      showPastedToast();
-      trackFunction('paste_text', 'clipboard', {
-        length: trimmed.length,
-        source: targetWorldPt ? 'long_press_canvas' : 'shortcut',
-      });
-      return true;
+      refreshSelectionInfo();
+      pushHistory();
     },
-    [
-      finalizeBezierSession,
-      finalizeContourSession,
-      getViewportWorldCenter,
-      refreshEmptyState,
-      refreshSelectedInfo,
-      saveHistory,
-      showPastedToast,
-      syncFabricToolState,
-    ]
+    [pushHistory, refreshSelectionInfo]
   );
 
-  const handleClipboardDataTransfer = useCallback(
-    (data: DataTransfer | null | undefined, targetWorldPt?: Point): boolean => {
-      if (!data) return false;
-
-      // 1) Internal ZenPainter object token
-      const htmlData = data.getData('text/html') || '';
-      const tokenMatch =
-        htmlData.match(/name=["']zp-clip["'][^>]*content=["']([^"']+)["']/i) ||
-        htmlData.match(/content=["']([^"']+)["'][^>]*name=["']zp-clip["']/i);
-      const clipToken = tokenMatch?.[1] || null;
-
-      if (
-        clipToken &&
-        clipToken === internalClipboardTokenRef.current &&
-        internalClipboardObjRef.current
-      ) {
-        pasteInternalObjectAt(targetWorldPt);
-        return true;
-      }
-
-      // 2) Image file / bitmap in DataTransfer
-      let imageFile: File | null = null;
-      const items = data.items;
-      if (items) {
-        for (let i = 0; i < items.length; i++) {
-          if (items[i].type && items[i].type.startsWith('image/')) {
-            const f = items[i].getAsFile();
-            if (f) {
-              imageFile = f;
-              break;
-            }
-          }
-        }
-      }
-      if (!imageFile && data.files && data.files.length > 0) {
-        for (let i = 0; i < data.files.length; i++) {
-          const f = data.files[i];
-          if (f.type && f.type.startsWith('image/')) {
-            imageFile = f;
-            break;
-          }
-        }
-      }
-      if (imageFile) {
-        pasteImageBlobAt(imageFile, targetWorldPt);
-        return true;
-      }
-
-      // 3) Inline data-URI <img> wrapped in HTML clipboard
-      const htmlImgMatch = htmlData.match(/<img[^>]+src=["'](data:image\/[^"']+)["']/i);
-      if (htmlImgMatch?.[1]) {
-        pasteImageDataUrlAt(htmlImgMatch[1], targetWorldPt);
-        return true;
-      }
-
-      // 4) Plain text in DataTransfer
-      const plainText = data.getData('text/plain');
-      if (plainText && plainText.trim().length > 0) {
-        pastePlainTextAt(plainText, targetWorldPt);
-        return true;
-      }
-
-      return false;
-    },
-    [pasteImageBlobAt, pasteImageDataUrlAt, pasteInternalObjectAt, pastePlainTextAt]
-  );
-
-  const handlePasteFromCanvasMenu = useCallback(async () => {
-    if (!canvasPasteMenu) return;
-    const currentMenu = canvasPasteMenu;
-    const targetPt = { x: currentMenu.worldX, y: currentMenu.worldY };
-
-    let readAttemptSucceeded = false;
-
-    if (typeof navigator !== 'undefined' && navigator.clipboard) {
-      if (typeof navigator.clipboard.read === 'function') {
-        try {
-          const items = await navigator.clipboard.read();
-          readAttemptSucceeded = true;
-
-          // 1) Check for our internal object copy tag or HTML data-URI image
-          let htmlFallbackImg: string | null = null;
-          for (const item of items) {
-            if (item.types.includes('text/html')) {
-              const htmlBlob = await item.getType('text/html');
-              const htmlText = await htmlBlob.text();
-              const tokenMatch =
-                htmlText.match(/name=["']zp-clip["'][^>]*content=["']([^"']+)["']/i) ||
-                htmlText.match(/content=["']([^"']+)["'][^>]*name=["']zp-clip["']/i);
-              const clipToken = tokenMatch?.[1] || null;
-              if (
-                clipToken &&
-                clipToken === internalClipboardTokenRef.current &&
-                internalClipboardObjRef.current
-              ) {
-                setCanvasPasteMenu(null);
-                pasteInternalObjectAt(targetPt);
-                return;
-              }
-              if (!htmlFallbackImg) {
-                const m = htmlText.match(/<img[^>]+src=["'](data:image\/[^"']+)["']/i);
-                if (m?.[1]) htmlFallbackImg = m[1];
-              }
-            }
-          }
-
-          // 2) Check for an image in clipboard
-          for (const item of items) {
-            const imgType = item.types.find((tp) => tp.startsWith('image/'));
-            if (imgType) {
-              const imgBlob = await item.getType(imgType);
-              setCanvasPasteMenu(null);
-              pasteImageBlobAt(imgBlob, targetPt);
-              return;
-            }
-          }
-
-          if (htmlFallbackImg) {
-            setCanvasPasteMenu(null);
-            pasteImageDataUrlAt(htmlFallbackImg, targetPt);
-            return;
-          }
-
-          // 3) Check for plain text in clipboard
-          for (const item of items) {
-            if (item.types.includes('text/plain')) {
-              const txtBlob = await item.getType('text/plain');
-              const txt = await txtBlob.text();
-              if (txt && txt.trim()) {
-                setCanvasPasteMenu(null);
-                if (
-                  internalClipboardObjRef.current &&
-                  internalClipboardPlainRef.current &&
-                  txt.trim() === internalClipboardPlainRef.current.trim()
-                ) {
-                  pasteInternalObjectAt(targetPt);
-                  return;
-                }
-                pastePlainTextAt(txt, targetPt);
-                return;
-              }
-            }
-          }
-        } catch {
-          readAttemptSucceeded = false;
-        }
-      }
-
-      if (!readAttemptSucceeded && typeof navigator.clipboard.readText === 'function') {
-        try {
-          const txt = await navigator.clipboard.readText();
-          readAttemptSucceeded = true;
-          if (txt && txt.trim()) {
-            setCanvasPasteMenu(null);
-            if (
-              internalClipboardObjRef.current &&
-              internalClipboardPlainRef.current &&
-              txt.trim() === internalClipboardPlainRef.current.trim()
-            ) {
-              pasteInternalObjectAt(targetPt);
-              return;
-            }
-            pastePlainTextAt(txt, targetPt);
-            return;
-          }
-        } catch {
-          readAttemptSucceeded = false;
-        }
-      }
-    }
-
-    if (readAttemptSucceeded) {
-      // System clipboard API succeeded and is genuinely empty
-      setCanvasPasteMenu(null);
-      trackFunction('paste_menu_trigger', 'clipboard', { result: 'empty' });
-      showPasteErrorToast('empty');
-      return;
-    }
-
-    // Try silent execCommand('paste') fallback inside temporary offscreen editable node (for WebViews / permissive browsers)
-    let execHandled = false;
-    try {
-      const probe = document.createElement('div');
-      probe.contentEditable = 'true';
-      probe.style.position = 'fixed';
-      probe.style.left = '-9999px';
-      probe.style.top = '0';
-      probe.style.opacity = '0';
-      document.body.appendChild(probe);
-      const onProbePaste = (ev: ClipboardEvent) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        execHandled = handleClipboardDataTransfer(ev.clipboardData, targetPt);
-      };
-      probe.addEventListener('paste', onProbePaste as EventListener, { once: true });
-      probe.focus({ preventScroll: true });
-      document.execCommand('paste');
-      probe.removeEventListener('paste', onProbePaste as EventListener);
-      document.body.removeChild(probe);
-    } catch {
-      execHandled = false;
-    }
-
-    if (execHandled) {
-      setCanvasPasteMenu(null);
-      trackFunction('paste_menu_trigger', 'clipboard', { result: 'exec_handled' });
-      return;
-    }
-
-    // Browser/iframe Permissions Policy blocked programmatic clipboard read:
-    // keep the popup open and switch it to an auto-focused native Paste Catcher (works with Ctrl+V AND mobile OS long-tap Paste!)
-    trackFunction('paste_menu_trigger', 'clipboard', { result: 'waiting_native_paste' });
-    setCanvasPasteMenu({
-      ...currentMenu,
-      waitingNativePaste: true,
-    });
-  }, [
-    canvasPasteMenu,
-    handleClipboardDataTransfer,
-    pasteImageBlobAt,
-    pasteImageDataUrlAt,
-    pasteInternalObjectAt,
-    pastePlainTextAt,
-    showPasteErrorToast,
-  ]);
-
-  // Standard Copy / Paste (Ctrl+C / Ctrl+V) for external images, plain text, and canvas objects
-  useEffect(() => {
-    const isTypingTarget = (target: EventTarget | null) => {
-      const el = target as HTMLElement | null;
-      if (el) {
-        const tag = el.tagName;
-        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
-        if (el.isContentEditable) return true;
-      }
-      const activeObj = fabricCanvasRef.current?.getActiveObject();
-      if (activeObj && activeObj.isEditing) return true;
-      return false;
-    };
-
-    const handleCopy = (e: ClipboardEvent) => {
-      if (isTypingTarget(e.target)) return;
-      const fc = fabricCanvasRef.current;
-      if (!fc || !e.clipboardData) return;
-
-      const domSelection = window.getSelection()?.toString()?.trim();
-      if (domSelection) return;
-
+  const handleUpdateSelectedOpacity = useCallback(
+    (opacity: number) => {
+      const fc = fabricRef.current;
+      if (!fc) return;
       const active = fc.getActiveObject();
-      if (!active || active.excludeFromExport) return;
+      if (!active) return;
+      active.set({ opacity, dirty: true });
+      fc.requestRenderAll();
+      refreshSelectionInfo();
+      pushHistory();
+    },
+    [pushHistory, refreshSelectionInfo]
+  );
 
-      const token = `zp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-      const plainFallback =
-        typeof active.text === 'string' && active.text.trim()
-          ? active.text
-          : '[ZenPainter Object]';
-
-      internalClipboardTokenRef.current = token;
-      internalClipboardPlainRef.current = plainFallback;
-      pasteOffsetCountRef.current = 0;
-
-      e.preventDefault();
-      e.clipboardData.setData('text/html', `<meta name="zp-clip" content="${token}">`);
-      e.clipboardData.setData('text/plain', plainFallback);
-
-      active.clone((cloned: any) => {
-        internalClipboardObjRef.current = cloned;
-      }, CUSTOM_JSON_PROPS);
-
-      trackFunction('copy_object', 'clipboard', { object_type: active.type || 'object' });
-    };
-
-    const handlePaste = (e: ClipboardEvent) => {
-      if (isTypingTarget(e.target)) return;
-      if (handleClipboardDataTransfer(e.clipboardData)) {
-        e.preventDefault();
+  const handleUpdateSelectedCornerRadius = useCallback(
+    (ratio: number) => {
+      const fc = fabricRef.current;
+      if (!fc) return;
+      const active = fc.getActiveObject();
+      if (!active) return;
+      if (applyCornerRoundingToObject(active, ratio)) {
+        fc.requestRenderAll();
+        refreshSelectionInfo();
+        pushHistory();
       }
-    };
+    },
+    [pushHistory, refreshSelectionInfo]
+  );
 
-    window.addEventListener('copy', handleCopy);
-    window.addEventListener('paste', handlePaste);
-    return () => {
-      window.removeEventListener('copy', handleCopy);
-      window.removeEventListener('paste', handlePaste);
-    };
-  }, [handleClipboardDataTransfer]);
+  const handleToggleSelectedClosedContour = useCallback(
+    (nextClosed: boolean) => {
+      const fc = fabricRef.current;
+      if (!fc) return;
+      const active = fc.getActiveObject();
+      if (!active) return;
+      const converted = nextClosed
+        ? convertObjectToClosedContour(active, fillRef.current, true)
+        : convertClosedContourToOpen(active, true);
+      if (converted) {
+        fc.remove(active);
+        fc.add(converted);
+        fc.setActiveObject(converted);
+        fc.requestRenderAll();
+        refreshSelectionInfo();
+        pushHistory();
+      }
+    },
+    [pushHistory, refreshSelectionInfo]
+  );
 
-  const handleActivateLasso = useCallback(() => {
-    if (bezierSessionRef.current) {
-      finalizeBezierSession(false);
-    }
-    if (contourSessionRef.current) {
-      finalizeContourSession(false);
-    }
-    setObjectEditorOpen(false);
-    setActivePopover(null);
-    activeModeRef.current = 'lasso';
-    setActiveMode('lasso');
-    syncFabricToolState();
-    trackFunction('activate_lasso', 'selection');
-  }, [finalizeBezierSession, finalizeContourSession, syncFabricToolState]);
+  const handleMorphSelectedPolygon = useCallback(
+    (variant: PolygonVariant) => {
+      const fc = fabricRef.current;
+      const fabric = getFabric();
+      if (!fc || !fabric) return;
+      const active = fc.getActiveObject();
+      if (!active || !active.isPolygonMorphable) return;
 
-  const handleClearCanvas = useCallback(() => {
-    const fc = fabricCanvasRef.current;
-    if (!fc) return;
-    if (bezierSessionRef.current) {
-      finalizeBezierSession(true);
-    }
-    if (contourSessionRef.current) {
-      finalizeContourSession(true);
-    }
-    isDrawingLassoRef.current = false;
-    lassoPointsRef.current = [];
-    if (lassoRafRef.current !== null) {
-      window.cancelAnimationFrame(lassoRafRef.current);
-      lassoRafRef.current = null;
-    }
+      const center = active.getCenterPoint();
+      const rx = Math.max(8, ((active.width || 60) * Math.abs(active.scaleX || 1)) / 2);
+      const ry = Math.max(8, ((active.height || 60) * Math.abs(active.scaleY || 1)) / 2);
+      const pts = buildPolygonPoints(variant, 0, 0, rx, ry);
 
-    const toRemove = fc.getObjects().filter((o: any) => !o.excludeFromExport);
-    toRemove.forEach((o: any) => fc.remove(o));
-    fc.discardActiveObject();
-    fc.requestRenderAll();
-
-    setSelectedInfo(null);
-    setObjectEditorOpen(false);
-    setActivePopover(null);
-    setClearConfirmOpen(false);
-    refreshEmptyState();
-    saveHistory();
-    trackFunction('clear_canvas', 'edit', { cleared_count: toRemove.length });
-  }, [finalizeBezierSession, finalizeContourSession, refreshEmptyState, saveHistory]);
-
-  const handleActivateEraser = () => {
-    if (bezierSessionRef.current) {
-      finalizeBezierSession(false);
-    }
-    if (contourSessionRef.current) {
-      finalizeContourSession(false);
-    }
-    setObjectEditorOpen(false);
-    setActiveMode('eraser');
-    setActivePopover((prev) => (prev === 'eraser' ? null : 'eraser'));
-    trackFunction('activate_eraser', 'tools', { eraser_size: eraserSizeRef.current });
-  };
-
-  const handleAddText = async (payload: {
-    text: string;
-    color: string;
-    fontFamily: string;
-    fontSize: number;
-  }) => {
-    const fc = fabricCanvasRef.current;
-    const fabric = getFabric();
-    if (!fc || !fabric) return;
-
-    if (bezierSessionRef.current) {
-      finalizeBezierSession(false);
-    }
-    if (contourSessionRef.current) {
-      finalizeContourSession(false);
-    }
-
-    try {
-      await Promise.race([
-        document.fonts.load(`${payload.fontSize}px "${payload.fontFamily}"`),
-        new Promise((res) => setTimeout(res, 600)),
-      ]);
-    } catch {
-      // Safe fallback
-    }
-
-    const center = fc.getCenter();
-    const vpt = fc.viewportTransform || [1, 0, 0, 1, 0, 0];
-    const inv = fabric.util.invertTransform(vpt);
-    const worldCenter = fabric.util.transformPoint(
-      new fabric.Point(center.left, center.top),
-      inv
-    );
-
-    const textObj = new fabric.IText(payload.text, {
-      left: worldCenter.x,
-      top: worldCenter.y,
-      originX: 'center',
-      originY: 'center',
-      fontFamily: payload.fontFamily,
-      fontSize: payload.fontSize,
-      fill: payload.color,
-      editable: true,
-      hasControls: true,
-      hasBorders: true,
-      selectable: true,
-      evented: true,
-    });
-
-    setActiveMode('select');
-    activeModeRef.current = 'select';
-    fc.add(textObj);
-    syncFabricToolState();
-    fc.setActiveObject(textObj);
-    textObj.setCoords();
-    fc.requestRenderAll();
-    refreshSelectedInfo();
-    saveHistory();
-    trackFunction('add_text', 'insert', {
-      font_family: payload.fontFamily,
-      font_size: payload.fontSize,
-    });
-
-    setActivePopover(null);
-  };
-
-  const handleAddEmoji = (emoji: EmojiDefinition) => {
-    const fc = fabricCanvasRef.current;
-    const fabric = getFabric();
-    if (!fc || !fabric) return;
-
-    if (bezierSessionRef.current) {
-      finalizeBezierSession(false);
-    }
-    if (contourSessionRef.current) {
-      finalizeContourSession(false);
-    }
-
-    const zoom = fc.getZoom() || 1;
-    const center = fc.getCenter();
-    const vpt = fc.viewportTransform || [1, 0, 0, 1, 0, 0];
-    const inv = fabric.util.invertTransform(vpt);
-    const worldCenter = fabric.util.transformPoint(
-      new fabric.Point(center.left, center.top),
-      inv
-    );
-
-    const emojiObj = new fabric.IText(emoji.char, {
-      left: worldCenter.x,
-      top: worldCenter.y,
-      originX: 'center',
-      originY: 'center',
-      fontFamily:
-        '"Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", "Twemoji Mozilla", sans-serif',
-      fontSize: Math.round(60 / Math.max(0.25, zoom)),
-      fill: '#000000',
-      editable: true,
-      hasControls: true,
-      hasBorders: true,
-      selectable: true,
-      evented: true,
-    });
-
-    setActiveMode('select');
-    activeModeRef.current = 'select';
-    fc.add(emojiObj);
-    syncFabricToolState();
-    fc.setActiveObject(emojiObj);
-    emojiObj.setCoords();
-    fc.requestRenderAll();
-    refreshSelectedInfo();
-    saveHistory();
-    trackFunction('add_emoji', 'insert', { emoji_name: emoji.name });
-
-    setActivePopover(null);
-  };
-
-  const handleAddStamp = (stamp: StampDefinition, color: string) => {
-    const fc = fabricCanvasRef.current;
-    const fabric = getFabric();
-    if (!fc || !fabric) return;
-
-    if (bezierSessionRef.current) {
-      finalizeBezierSession(false);
-    }
-    if (contourSessionRef.current) {
-      finalizeContourSession(false);
-    }
-
-    const svgString = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="64" height="64" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${stamp.paths}</svg>`;
-
-    fabric.loadSVGFromString(svgString, (objects: any[], options: any) => {
-      if (!objects || objects.length === 0) return;
-      const group = fabric.util.groupSVGElements(objects, options);
-      if (!group) return;
-
-      const items = Array.isArray(group._objects) ? group._objects : [group];
-      items.forEach((child: any) => {
-        child.set({
-          stroke: color,
-          strokeWidth: 2,
-          strokeUniform: true,
-          strokeLineCap: 'round',
-          strokeLineJoin: 'round',
-        });
-      });
-
-      const zoom = fc.getZoom() || 1;
-      const center = fc.getCenter();
-      const vpt = fc.viewportTransform || [1, 0, 0, 1, 0, 0];
-      const inv = fabric.util.invertTransform(vpt);
-      const worldCenter = fabric.util.transformPoint(
-        new fabric.Point(center.left, center.top),
-        inv
-      );
-
-      const baseDim = Math.max(group.width || 24, group.height || 24, 1);
-      const targetSize = 72 / zoom;
-      const scale = targetSize / baseDim;
-
-      group.set({
-        left: worldCenter.x,
-        top: worldCenter.y,
+      const nextPoly = new fabric.Polygon(pts, {
+        left: center.x,
+        top: center.y,
+        angle: active.angle || 0,
+        fill: active.fill,
+        fillMeta: active.fillMeta,
+        stroke: active.stroke,
+        strokeColorHex: active.strokeColorHex,
+        strokeOpacity: active.strokeOpacity,
+        strokeWidth: active.strokeWidth,
+        strokeDashArray: active.strokeDashArray,
+        strokePattern: active.strokePattern,
+        doubleLine: active.doubleLine,
+        strokeUniform: true,
+        strokeLineJoin: 'round',
+        opacity: active.opacity ?? 1,
+        isPolygonMorphable: true,
+        polygonVariant: variant,
+        baseLocalPoints: pts.map((p) => ({ x: p.x, y: p.y })),
         originX: 'center',
         originY: 'center',
-        scaleX: scale,
-        scaleY: scale,
-        isStampGroup: true,
-        stampColor: color,
-        strokeColorHex: color,
-        strokeOpacity: 1,
-        strokePattern: 'solid',
-        strokeUniform: true,
-        selectable: true,
-        evented: true,
-      });
-
-      setActiveMode('select');
-      activeModeRef.current = 'select';
-      fc.add(group);
-      syncFabricToolState();
-      fc.setActiveObject(group);
-      group.setCoords();
-      fc.requestRenderAll();
-      refreshSelectedInfo();
-      saveHistory();
-      trackFunction('add_stamp', 'insert', {
-        stamp_id: stamp.id,
-        stamp_category: stamp.category,
-      });
-
-      setActivePopover(null);
-    });
-  };
-
-  const handleImageFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
-    if (!file) return;
-
-    const fc = fabricCanvasRef.current;
-    const fabric = getFabric();
-    if (!fc || !fabric) return;
-
-    if (bezierSessionRef.current) {
-      finalizeBezierSession(false);
-    }
-    if (contourSessionRef.current) {
-      finalizeContourSession(false);
-    }
-
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const dataUrl = ev.target?.result as string;
-      if (!dataUrl) return;
-
-      fabric.Image.fromURL(
-        dataUrl,
-        (img: any) => {
-          if (!img) return;
-          const zoom = fc.getZoom() || 1;
-          const maxW = (fc.getWidth() * 0.65) / zoom;
-          const maxH = (fc.getHeight() * 0.65) / zoom;
-          const scale = Math.min(1, maxW / (img.width || 1), maxH / (img.height || 1));
-
-          const center = fc.getCenter();
-          const vpt = fc.viewportTransform || [1, 0, 0, 1, 0, 0];
-          const inv = fabric.util.invertTransform(vpt);
-          const worldCenter = fabric.util.transformPoint(
-            new fabric.Point(center.left, center.top),
-            inv
-          );
-
-          img.set({
-            left: worldCenter.x,
-            top: worldCenter.y,
-            originX: 'center',
-            originY: 'center',
-            scaleX: scale,
-            scaleY: scale,
-            strokeUniform: true,
-            strokeWidth: 0,
-            stroke: '#000000',
-            strokeColorHex: '#000000',
-            strokeOpacity: 1,
-            selectable: true,
-            evented: true,
-          });
-
-          setActiveMode('select');
-          activeModeRef.current = 'select';
-          fc.add(img);
-          syncFabricToolState();
-          fc.setActiveObject(img);
-          img.setCoords();
-          fc.requestRenderAll();
-          refreshSelectedInfo();
-          saveHistory();
-          trackFunction('upload_canvas_image', 'insert', {
-            file_type: file.type,
-            file_size_kb: Math.round(file.size / 1024),
-          });
-
-          setActivePopover(null);
-        },
-        { crossOrigin: 'anonymous' }
-      );
-    };
-    reader.readAsDataURL(file);
-  };
-
-  // Selected Object Editing Handlers (Live Re-Editing for single or multi-selection!)
-  const handleUpdateSelectedStroke = (patch: {
-    color?: string;
-    opacity?: number;
-    width?: number;
-    pattern?: LinePattern;
-    doubleLine?: boolean;
-    brushType?: BrushType;
-  }) => {
-    const fc = fabricCanvasRef.current;
-    const activeObj = fc?.getActiveObject();
-    const fabric = getFabric();
-    if (!fc || !activeObj || !selectedInfo) return;
-
-    const targets = getEditableTargets(activeObj);
-    if (targets.length === 0) return;
-
-    const nextColor = patch.color ?? selectedInfo.strokeColor;
-    const nextStrokeOpacity = patch.opacity ?? selectedInfo.strokeOpacity ?? 1;
-    const effectiveStroke = applyColorOpacity(nextColor, nextStrokeOpacity);
-    const nextWidth = patch.width ?? selectedInfo.strokeWidth;
-    const nextPattern = patch.pattern ?? selectedInfo.strokePattern;
-    const nextDoubleLine = patch.doubleLine ?? selectedInfo.doubleLine;
-    const dash = getScaledDashArray(nextPattern, nextWidth);
-
-    targets.forEach((obj: any) => {
-      if (obj.isSprayGroup) {
-        const items = Array.isArray(obj._objects) ? obj._objects : [];
-        items.forEach((child: any) => {
-          child.set({ fill: effectiveStroke, dirty: true });
-        });
-        obj.set({
-          strokeColorHex: nextColor,
-          strokeOpacity: nextStrokeOpacity,
-          dirty: true,
-        });
-      } else if (obj.isArrowGroup && Array.isArray(obj._objects)) {
-        const safeArrowW = Math.max(1, nextWidth);
-        const arrowDash = getScaledDashArray(nextPattern, safeArrowW);
-        obj._objects.forEach((child: any, idx: number) => {
-          if (child.isArrowShaft || (!child.isArrowHeadStroke && !child.isArrowHeadFill && !child.isArrowTailDot && idx === 0 && child.type === 'line')) {
-            child.set({
-              stroke: effectiveStroke,
-              strokeColorHex: nextColor,
-              strokeOpacity: nextStrokeOpacity,
-              strokeWidth: safeArrowW,
-              strokeDashArray: arrowDash || undefined,
-              strokePattern: nextPattern,
-              doubleLine: nextDoubleLine,
-              strokeUniform: true,
-              dirty: true,
-            });
-          } else if (child.isArrowHeadStroke) {
-            child.set({
-              stroke: effectiveStroke,
-              strokeWidth: safeArrowW,
-              strokeUniform: true,
-              dirty: true,
-            });
-          } else if (child.isArrowHeadFill || child.isArrowTailDot || idx > 0) {
-            child.set({ fill: effectiveStroke, dirty: true });
-          }
-        });
-        obj.set({
-          strokeColorHex: nextColor,
-          strokeOpacity: nextStrokeOpacity,
-          strokePattern: nextPattern,
-          doubleLine: nextDoubleLine,
-          dirty: true,
-        });
-      } else if (obj.isStampGroup) {
-        const allowZeroStamp =
-          isClosedFillableObject(obj) &&
-          obj.fillMeta?.mode !== 'none';
-        const stampStrokeWidth = allowZeroStamp
-          ? nextWidth
-          : Math.max(1, nextWidth);
-        const stampDash = getScaledDashArray(nextPattern, stampStrokeWidth);
-        const items = Array.isArray(obj._objects) ? obj._objects : [obj];
-        items.forEach((child: any) => {
-          child.set({
-            stroke: stampStrokeWidth > 0 ? effectiveStroke : null,
-            strokeWidth: stampStrokeWidth,
-            strokeDashArray: stampDash || undefined,
-            strokePattern: nextPattern,
-            doubleLine: nextDoubleLine,
-            strokeUniform: true,
-            dirty: true,
-          });
-        });
-        obj.set({
-          stampColor: nextColor,
-          strokeColorHex: nextColor,
-          strokeOpacity: nextStrokeOpacity,
-          strokePattern: nextPattern,
-          doubleLine: nextDoubleLine,
-          dirty: true,
-        });
-      } else if (obj.type === 'image') {
-        obj.set({
-          stroke: nextWidth > 0 ? effectiveStroke : null,
-          strokeColorHex: nextColor,
-          strokeOpacity: nextStrokeOpacity,
-          strokeWidth: nextWidth,
-          doubleLine: nextDoubleLine,
-          strokeUniform: true,
-          dirty: true,
-        });
-      } else if (obj.type === 'i-text' || obj.type === 'text') {
-        if (patch.color !== undefined || patch.opacity !== undefined) {
-          obj.set({
-            fill: effectiveStroke,
-            dirty: true,
-          });
-        }
-      } else {
-        const nextBrushType =
-          patch.brushType !== undefined ? patch.brushType : obj.brushType || 'standard';
-        const effectiveDouble =
-          nextBrushType === 'soft' ? false : nextDoubleLine;
-        const allowsZeroStroke =
-          isClosedFillableObject(obj) &&
-          obj.fillMeta?.mode !== 'none' &&
-          obj.fill !== 'transparent' &&
-          Boolean(obj.fill);
-        const targetStrokeWidth = allowsZeroStroke
-          ? nextWidth
-          : Math.max(1, nextWidth);
-
-        obj.set({
-          stroke: targetStrokeWidth > 0 ? effectiveStroke : null,
-          strokeColorHex: nextColor,
-          strokeOpacity: nextStrokeOpacity,
-          strokeWidth: targetStrokeWidth,
-          strokeDashArray: dash || undefined,
-          strokePattern: nextPattern,
-          doubleLine: effectiveDouble,
-          brushType: nextBrushType,
-          strokeUniform: true,
-          dirty: true,
-        });
-        if (nextBrushType === 'soft' && fabric && targetStrokeWidth > 0) {
-          obj.set({
-            shadow: new fabric.Shadow({
-              blur: Math.max(8, targetStrokeWidth * 1.45),
-              color: effectiveStroke,
-              affectStroke: true,
-              offsetX: 0,
-              offsetY: 0,
-            }),
-            dirty: true,
-          });
-        } else if (patch.brushType === 'standard' || targetStrokeWidth === 0) {
-          obj.set({ shadow: null, dirty: true });
-        }
-      }
-      obj.setCoords();
-    });
-
-    activeObj.setCoords();
-    fc.requestRenderAll();
-    refreshSelectedInfo();
-    scheduleHistorySave();
-    trackFunction('update_object_stroke', 'edit', {
-      changed_keys: Object.keys(patch).join(','),
-      target_count: targets.length,
-    });
-  };
-
-  const handleUpdateSelectedFill = (nextFill: FillSettings) => {
-    const fc = fabricCanvasRef.current;
-    const activeObj = fc?.getActiveObject();
-    if (!fc || !activeObj) return;
-
-    const targets = getEditableTargets(activeObj).filter((t) =>
-      isClosedFillableObject(t)
-    );
-    if (targets.length === 0) return;
-
-    targets.forEach((obj: any) => {
-      applyFillToObject(obj, nextFill, fc);
-      obj.set({
-        perPixelTargetFind: false,
-        targetFindTolerance: 16,
-        dirty: true,
-      });
-
-      if (nextFill.mode === 'none') {
-        const currentWidth = obj.isStampGroup
-          ? Array.isArray(obj._objects) && obj._objects[0]
-            ? obj._objects[0].strokeWidth
-            : 2
-          : obj.strokeWidth;
-        if (!currentWidth || currentWidth === 0) {
-          const restoreColor = obj.strokeColorHex || obj.stampColor || '#000000';
-          const restoreOpacity =
-            typeof obj.strokeOpacity === 'number' ? obj.strokeOpacity : 1;
-          const restoredStroke = applyColorOpacity(restoreColor, restoreOpacity);
-          if (obj.isStampGroup && Array.isArray(obj._objects)) {
-            obj._objects.forEach((child: any) =>
-              child.set({ strokeWidth: 1, stroke: restoredStroke, dirty: true })
-            );
-          } else {
-            obj.set({ strokeWidth: 1, stroke: restoredStroke, dirty: true });
-          }
-        }
-      }
-      obj.setCoords();
-    });
-    fc.requestRenderAll();
-    refreshSelectedInfo();
-    scheduleHistorySave();
-    trackFunction('update_object_fill', 'edit', {
-      fill_mode: nextFill.mode,
-      has_photo: Boolean(nextFill.photoDataUrl),
-      target_count: targets.length,
-    });
-  };
-
-  const handleUpdateSelectedOpacity = (opacity: number) => {
-    const fc = fabricCanvasRef.current;
-    const activeObj = fc?.getActiveObject();
-    if (!fc || !activeObj) return;
-
-    const targets = getEditableTargets(activeObj);
-    if (targets.length === 0) return;
-    targets.forEach((obj: any) => {
-      obj.set({ opacity, dirty: true });
-    });
-    fc.requestRenderAll();
-    refreshSelectedInfo();
-    scheduleHistorySave();
-  };
-
-  const handleUpdateSelectedCornerRadius = (ratio: number) => {
-    const fc = fabricCanvasRef.current;
-    const activeObj = fc?.getActiveObject();
-    if (!fc || !activeObj) return;
-
-    const targets = getEditableTargets(activeObj);
-    let updated = false;
-    targets.forEach((obj: any) => {
-      if (applyCornerRoundingToObject(obj, ratio)) {
-        obj.setCoords();
-        updated = true;
-      }
-    });
-    if (updated) {
-      activeObj.setCoords();
-      fc.requestRenderAll();
-      refreshSelectedInfo();
-      scheduleHistorySave();
-    }
-  };
-
-  const handleToggleSelectedClosedContour = (nextClosed: boolean) => {
-    const fc = fabricCanvasRef.current;
-    const obj = fc?.getActiveObject();
-    if (!fc || !obj || obj.type === 'activeSelection') return;
-
-    setClosedContour(nextClosed);
-    const idx = fc.getObjects().indexOf(obj);
-    const converted = nextClosed
-      ? convertObjectToClosedContour(obj, fillRef.current, true)
-      : convertClosedContourToOpen(obj, true);
-    if (!converted) return;
-
-    fc.remove(obj);
-    if (idx >= 0) {
-      fc.insertAt(converted, idx, false);
-    } else {
-      fc.add(converted);
-    }
-    attachControlsToObject(converted);
-    converted.setCoords();
-    fc.setActiveObject(converted);
-    fc.requestRenderAll();
-    refreshSelectedInfo();
-    saveHistory();
-    trackFunction('toggle_object_closed_contour', 'edit', { closed: nextClosed });
-  };
-
-  const handleMorphSelectedPolygon = (variant: PolygonVariant) => {
-    const fc = fabricCanvasRef.current;
-    const obj = fc?.getActiveObject();
-    const fabric = getFabric();
-    if (!fc || !fabric || !obj || obj.type !== 'polygon') return;
-
-    const center = obj.getCenterPoint();
-    const baseW = (obj.baseWidth ?? obj.width ?? 40) * Math.abs(obj.scaleX || 1);
-    const baseH = (obj.baseHeight ?? obj.height ?? 40) * Math.abs(obj.scaleY || 1);
-    const rx = Math.max(8, baseW / 2);
-    const ry = Math.max(8, baseH / 2);
-
-    const pts = buildPolygonPoints(variant, center.x, center.y, rx, ry);
-    const nextPoly = new fabric.Polygon(pts, {
-      fill: obj.fill,
-      fillMeta: obj.fillMeta ? { ...obj.fillMeta } : undefined,
-      stroke: obj.stroke,
-      strokeColorHex: obj.strokeColorHex,
-      strokeOpacity: obj.strokeOpacity,
-      strokeWidth: obj.strokeWidth,
-      strokeDashArray: obj.strokeDashArray,
-      strokePattern: obj.strokePattern,
-      doubleLine: obj.doubleLine,
-      opacity: obj.opacity,
-      angle: obj.angle || 0,
-      flipX: Boolean(obj.flipX),
-      flipY: Boolean(obj.flipY),
-      strokeUniform: true,
-      strokeLineJoin: 'round',
-      perPixelTargetFind: false,
-      targetFindTolerance: 16,
-      selectable: true,
-      evented: true,
-      cornerColor: '#2563EB',
-      borderColor: '#2563EB',
-    });
-
-    nextPoly.set({
-      baseLocalPoints: nextPoly.points.map((p: any) => ({ x: p.x, y: p.y })),
-      baseWidth: nextPoly.width,
-      baseHeight: nextPoly.height,
-      basePathOffset: {
-        x: nextPoly.pathOffset?.x || 0,
-        y: nextPoly.pathOffset?.y || 0,
-      },
-      cornerRoundRatio: obj.cornerRoundRatio || 0,
-      shapeSubtype: variant,
-    });
-    if (typeof obj.cornerRoundRatio === 'number' && obj.cornerRoundRatio > 0) {
-      applyCornerRoundingToObject(nextPoly, obj.cornerRoundRatio);
-    }
-    if (nextPoly.fillMeta?.mode === 'photo') {
-      refreshObjectPhotoFill(nextPoly, fc);
-    }
-
-    const idx = fc.getObjects().indexOf(obj);
-    fc.remove(obj);
-    if (idx >= 0) {
-      fc.insertAt(nextPoly, idx, false);
-    } else {
-      fc.add(nextPoly);
-    }
-    nextPoly.setCoords();
-    fc.setActiveObject(nextPoly);
-    fc.requestRenderAll();
-    refreshSelectedInfo();
-    saveHistory();
-    trackFunction('morph_object_polygon', 'edit', { variant });
-  };
-
-  const handleUpdateSelectedGrid = (nextGrid: RectGridConfig) => {
-    const fc = fabricCanvasRef.current;
-    const activeObj = fc?.getActiveObject();
-    if (!fc || !activeObj) return;
-
-    const targets = getEditableTargets(activeObj).filter((t) => t.type === 'rect');
-    if (targets.length === 0) return;
-
-    const rows = Math.max(1, Math.min(24, Math.round(nextGrid.rows)));
-    const cols = Math.max(1, Math.min(24, Math.round(nextGrid.cols)));
-
-    targets.forEach((obj: any) => {
-      const patch: any = {
-        isGridRect: nextGrid.enabled,
-        gridRows: rows,
-        gridCols: cols,
-        dirty: true,
-      };
-      if (nextGrid.enabled && (!obj.strokeWidth || obj.strokeWidth === 0)) {
-        const restoreColor = obj.strokeColorHex || '#000000';
-        const restoreOpacity =
-          typeof obj.strokeOpacity === 'number' ? obj.strokeOpacity : 1;
-        patch.strokeWidth = 1;
-        patch.stroke = applyColorOpacity(restoreColor, restoreOpacity);
-      }
-      obj.set(patch);
-      obj.setCoords();
-    });
-
-    activeObj.setCoords();
-    fc.requestRenderAll();
-    refreshSelectedInfo();
-    scheduleHistorySave();
-    trackFunction('update_object_grid', 'edit', { enabled: nextGrid.enabled, rows, cols });
-  };
-
-  const handleMorphSelectedArrow = (variant: ArrowVariant) => {
-    const fc = fabricCanvasRef.current;
-    const obj = fc?.getActiveObject();
-    if (!fc || !obj || (!obj.isArrowGroup && !obj.isArrowObject)) return;
-
-    const center = obj.getCenterPoint();
-    const baseLen =
-      typeof obj.arrowLength === 'number' && obj.arrowLength > 0
-        ? obj.arrowLength
-        : Math.max(24, obj.width || 80);
-    const effLen = Math.max(24, baseLen * Math.abs(obj.scaleX || 1));
-    const rad = ((obj.angle || 0) * Math.PI) / 180;
-    const dirSign = obj.flipX ? -1 : 1;
-    const ux = Math.cos(rad) * dirSign;
-    const uy = Math.sin(rad) * dirSign;
-    const x1 = center.x - ux * (effLen / 2);
-    const y1 = center.y - uy * (effLen / 2);
-    const x2 = center.x + ux * (effLen / 2);
-    const y2 = center.y + uy * (effLen / 2);
-
-    const shaft =
-      obj.isArrowGroup && Array.isArray(obj._objects)
-        ? obj._objects.find((c: any) => c.isArrowShaft) || obj._objects[0]
-        : null;
-    const strokeColorHex = obj.strokeColorHex || shaft?.strokeColorHex || strokeRef.current.color;
-    const strokeOpacityVal =
-      typeof obj.strokeOpacity === 'number'
-        ? obj.strokeOpacity
-        : typeof shaft?.strokeOpacity === 'number'
-          ? shaft.strokeOpacity
-          : 1;
-    const effectiveStroke = applyColorOpacity(strokeColorHex, strokeOpacityVal);
-    const rawStrokeW =
-      typeof obj.strokeWidth === 'number' && !obj.isArrowGroup
-        ? obj.strokeWidth
-        : typeof shaft?.strokeWidth === 'number'
-          ? shaft.strokeWidth
-          : strokeRef.current.width;
-    const isBlockVariant = variant === 'filled' || variant === 'filledDouble';
-    const nextFillMeta: FillSettings =
-      obj.fillMeta && obj.fillMeta.mode !== 'none'
-        ? { ...obj.fillMeta }
-        : fillRef.current.mode !== 'none'
-          ? { ...fillRef.current }
-          : {
-              mode: 'solid',
-              color: strokeColorHex,
-              opacity: 0.35,
-              hatchPattern: 'diagonal',
-            };
-    const nextWidth = isBlockVariant ? rawStrokeW : Math.max(1, rawStrokeW);
-    const nextPattern: LinePattern = obj.strokePattern || shaft?.strokePattern || 'solid';
-    const dash = getScaledDashArray(nextPattern, nextWidth);
-    const nextDouble = Boolean(obj.doubleLine || shaft?.doubleLine);
-    const nextFillVal = isBlockVariant ? buildFillValue(nextFillMeta) : undefined;
-
-    const nextArrow = createArrowObject(
-      x1,
-      y1,
-      x2,
-      y2,
-      effectiveStroke,
-      nextWidth,
-      dash,
-      nextDouble,
-      variant,
-      nextFillVal,
-      {
-        opacity: typeof obj.opacity === 'number' ? obj.opacity : 1,
-        flipY: Boolean(obj.flipY),
-        strokeColorHex,
-        strokeOpacity: strokeOpacityVal,
-        strokePattern: nextPattern,
-        fillMeta: isBlockVariant ? nextFillMeta : undefined,
-        cornerRoundRatio:
-          isBlockVariant && typeof obj.cornerRoundRatio === 'number'
-            ? obj.cornerRoundRatio
-            : 0,
-      }
-    );
-
-    if (
-      isBlockVariant &&
-      typeof obj.cornerRoundRatio === 'number' &&
-      obj.cornerRoundRatio > 0
-    ) {
-      applyCornerRoundingToObject(nextArrow, obj.cornerRoundRatio);
-    }
-
-    const idx = fc.getObjects().indexOf(obj);
-    fc.remove(obj);
-    if (idx >= 0) {
-      fc.insertAt(nextArrow, idx, false);
-    } else {
-      fc.add(nextArrow);
-    }
-    attachControlsToObject(nextArrow);
-    nextArrow.setCoords();
-    fc.setActiveObject(nextArrow);
-    fc.requestRenderAll();
-    refreshSelectedInfo();
-    saveHistory();
-    trackFunction('morph_object_arrow', 'edit', { variant });
-  };
-
-  const handleUpdateSelectedText = async (patch: {
-    color?: string;
-    fontFamily?: string;
-    fontSize?: number;
-  }) => {
-    const fc = fabricCanvasRef.current;
-    const obj = fc?.getActiveObject();
-    if (!fc || !obj) return;
-
-    if (patch.fontFamily) {
-      try {
-        await Promise.race([
-          document.fonts.load(`36px "${patch.fontFamily}"`),
-          new Promise((res) => setTimeout(res, 500)),
-        ]);
-      } catch {
-        // ignore
-      }
-    }
-
-    obj.set({
-      ...(patch.color !== undefined ? { fill: patch.color } : {}),
-      ...(patch.fontFamily !== undefined ? { fontFamily: patch.fontFamily } : {}),
-      ...(patch.fontSize !== undefined ? { fontSize: patch.fontSize } : {}),
-      dirty: true,
-    });
-    obj.setCoords();
-    fc.requestRenderAll();
-    refreshSelectedInfo();
-    scheduleHistorySave();
-    trackFunction('update_object_text', 'edit', {
-      font_family: patch.fontFamily,
-      font_size: patch.fontSize,
-    });
-  };
-
-  const handleEnterTextEdit = () => {
-    const fc = fabricCanvasRef.current;
-    const obj = fc?.getActiveObject();
-    if (!fc || !obj || obj.type !== 'i-text') return;
-    setObjectEditorOpen(false);
-    obj.enterEditing();
-    obj.selectAll();
-    fc.requestRenderAll();
-    trackFunction('enter_text_edit', 'edit');
-  };
-
-  const handleFlipSelected = (axis: 'x' | 'y') => {
-    const fc = fabricCanvasRef.current;
-    const obj = fc?.getActiveObject();
-    if (!fc || !obj) return;
-
-    if (axis === 'x') {
-      obj.set({ flipX: !obj.flipX });
-    } else {
-      obj.set({ flipY: !obj.flipY });
-    }
-    obj.setCoords();
-    fc.requestRenderAll();
-    refreshSelectedInfo();
-    saveHistory();
-    trackFunction('flip_object', 'edit', { axis });
-  };
-
-  const handleDeleteSelected = () => {
-    const fc = fabricCanvasRef.current;
-    if (!fc) return;
-    const active = fc.getActiveObjects();
-    if (!active || active.length === 0) return;
-    active.forEach((obj: any) => fc.remove(obj));
-    fc.discardActiveObject();
-    fc.requestRenderAll();
-    setSelectedInfo(null);
-    setObjectEditorOpen(false);
-    saveHistory();
-    trackFunction('delete_selected', 'edit', { count: active.length });
-  };
-
-  const handleDuplicateSelected = () => {
-    const fc = fabricCanvasRef.current;
-    if (!fc) return;
-    const active = fc.getActiveObject();
-    if (!active) return;
-
-    const fabric = getFabric();
-    active.clone((cloned: any) => {
-      fc.discardActiveObject();
-      cloned.set({
-        left: (cloned.left || 0) + 24,
-        top: (cloned.top || 0) + 24,
-        evented: true,
-        selectable: true,
         cornerColor: '#2563EB',
         borderColor: '#2563EB',
       });
-      if (cloned.type === 'polygon' && cloned.basePathOffset && fabric) {
-        cloned.set({
-          width: cloned.baseWidth ?? cloned.width,
-          height: cloned.baseHeight ?? cloned.height,
-          pathOffset: new fabric.Point(cloned.basePathOffset.x, cloned.basePathOffset.y),
-          dirty: true,
-        });
-      }
-      if (cloned.type === 'activeSelection') {
-        cloned.canvas = fc;
-        cloned.forEachObject((obj: any) => {
-          if (obj.fillMeta?.mode === 'photo') {
-            refreshObjectPhotoFill(obj, fc);
-          }
-          attachControlsToObject(obj);
-          fc.add(obj);
-        });
-        cloned.setCoords();
-      } else {
-        if (cloned.fillMeta?.mode === 'photo') {
-          refreshObjectPhotoFill(cloned, fc);
-        }
-        attachControlsToObject(cloned);
-        fc.add(cloned);
-      }
-      fc.setActiveObject(cloned);
+      nextPoly.baseWidth = nextPoly.width;
+      nextPoly.baseHeight = nextPoly.height;
+      nextPoly.basePathOffset = {
+        x: nextPoly.pathOffset?.x || 0,
+        y: nextPoly.pathOffset?.y || 0,
+      };
+      fc.remove(active);
+      fc.add(nextPoly);
+      fc.setActiveObject(nextPoly);
       fc.requestRenderAll();
-      refreshSelectedInfo();
-      saveHistory();
-      trackFunction('duplicate_selected', 'edit');
-    }, CUSTOM_JSON_PROPS);
-  };
+      refreshSelectionInfo();
+      pushHistory();
+    },
+    [pushHistory, refreshSelectionInfo]
+  );
 
-  const handleBringToFront = () => {
-    const fc = fabricCanvasRef.current;
-    const active = fc?.getActiveObject();
-    if (!fc || !active) return;
-    fc.bringToFront(active);
-    fc.requestRenderAll();
-    saveHistory();
-    trackFunction('bring_to_front', 'edit');
-  };
-
-  const handleSendToBack = () => {
-    const fc = fabricCanvasRef.current;
-    const active = fc?.getActiveObject();
-    if (!fc || !active) return;
-    fc.sendToBack(active);
-    fc.requestRenderAll();
-    saveHistory();
-    trackFunction('send_to_back', 'edit');
-  };
-
-  const fitCanvasToArtboard = useCallback(
-    (nextSize: CanvasSizeConfig) => {
-      const fc = fabricCanvasRef.current;
+  const handleMorphSelectedArrow = useCallback(
+    (variant: ArrowVariant) => {
+      const fc = fabricRef.current;
       if (!fc) return;
-      if (nextSize.preset === 'fullscreen') {
-        fc.setViewportTransform([1, 0, 0, 1, 0, 0]);
-        setZoomPercent(100);
-        renderBackground();
-        refreshSelectedInfo();
-        fc.requestRenderAll();
+      const active = fc.getActiveObject();
+      if (!active) return;
+      const center = active.getCenterPoint();
+      const len = Math.max(24, (active.width || 100) * Math.abs(active.scaleX || 1));
+      const rad = ((active.angle || 0) * Math.PI) / 180;
+      const x1 = center.x - (Math.cos(rad) * len) / 2;
+      const y1 = center.y - (Math.sin(rad) * len) / 2;
+      const x2 = center.x + (Math.cos(rad) * len) / 2;
+      const y2 = center.y + (Math.sin(rad) * len) / 2;
+
+      const fl = active.fillMeta || fillRef.current;
+      const nextArrow = createArrowObject(
+        x1,
+        y1,
+        x2,
+        y2,
+        active.strokeColorHex || strokeRef.current.color,
+        active.strokeWidth ?? strokeRef.current.width,
+        active.strokeDashArray || null,
+        Boolean(active.doubleLine),
+        variant,
+        buildFillValue(fl),
+        {
+          selectable: true,
+          evented: true,
+          opacity: active.opacity ?? 1,
+          strokeColorHex: active.strokeColorHex || strokeRef.current.color,
+          strokeOpacity: active.strokeOpacity ?? 1,
+          strokePattern: active.strokePattern || 'solid',
+          fillMeta: { ...fl },
+        }
+      );
+      fc.remove(active);
+      fc.add(nextArrow);
+      fc.setActiveObject(nextArrow);
+      fc.requestRenderAll();
+      refreshSelectionInfo();
+      pushHistory();
+    },
+    [pushHistory, refreshSelectionInfo]
+  );
+
+  const handleUpdateSelectedText = useCallback(
+    (patch: { color?: string; fontFamily?: string; fontSize?: number }) => {
+      const fc = fabricRef.current;
+      if (!fc) return;
+      const active = fc.getActiveObject();
+      if (!active || (active.type !== 'i-text' && active.type !== 'text' && active.type !== 'textbox')) {
         return;
       }
-      const vw = fc.getWidth();
-      const vh = fc.getHeight();
-      const pad = vw < 640 ? 36 : 72;
-      const fitZoom = Math.max(
-        0.08,
-        Math.min(1, (vw - pad) / nextSize.width, (vh - pad) / nextSize.height)
-      );
-      const center = artboardCenterRef.current;
-      const tx = vw / 2 - center.x * fitZoom;
-      const ty = vh / 2 - center.y * fitZoom;
-      fc.setViewportTransform([fitZoom, 0, 0, fitZoom, tx, ty]);
-      setZoomPercent(Math.round(fitZoom * 100));
-      renderBackground();
-      refreshSelectedInfo();
-      fc.requestRenderAll();
-    },
-    [refreshSelectedInfo, renderBackground]
-  );
-
-  const handleChangeCanvasSize = (next: CanvasSizeConfig, fitViewport = true) => {
-    const fc = fabricCanvasRef.current;
-    const fabric = getFabric();
-    if (
-      fc &&
-      fabric &&
-      canvasSizeRef.current.preset === 'fullscreen' &&
-      next.preset !== 'fullscreen'
-    ) {
-      const hasObjects = fc
-        .getObjects()
-        .some((o: any) => !o.excludeFromExport && !o.isEraserPath);
-      if (!hasObjects) {
-        const vpt = fc.viewportTransform || [1, 0, 0, 1, 0, 0];
-        const inv = fabric.util.invertTransform(vpt);
-        const worldPt = fabric.util.transformPoint(
-          new fabric.Point(fc.getWidth() / 2, fc.getHeight() / 2),
-          inv
-        );
-        artboardCenterRef.current = { x: worldPt.x, y: worldPt.y };
-      }
-    }
-    canvasSizeRef.current = next;
-    setCanvasSize(next);
-    if (fitViewport) {
-      fitCanvasToArtboard(next);
-    } else {
-      renderBackground();
-    }
-    trackFunction('change_canvas_size', 'canvas', {
-      preset: next.preset,
-      width: next.width,
-      height: next.height,
-    });
-  };
-
-  const handleResetView = () => {
-    fitCanvasToArtboard(canvasSizeRef.current);
-    trackFunction('reset_view', 'canvas', { preset: canvasSizeRef.current.preset });
-  };
-
-  const handleChangeLanguage = (pref: LanguagePreference) => {
-    setLanguagePref(pref);
-    saveLanguagePreference(pref);
-    trackFunction('change_language', 'settings', { language: pref });
-  };
-
-  const syncDefaultStrokeContrast = useCallback(
-    (nextBg: BackgroundConfig) => {
-      const willBeDark = isBackgroundDark(nextBg);
-      if (willBeDark && stroke.color.toLowerCase() === '#000000') {
-        setStroke((prev) => ({ ...prev, color: '#FFFFFF' }));
-      } else if (!willBeDark && stroke.color.toLowerCase() === '#ffffff') {
-        setStroke((prev) => ({ ...prev, color: '#000000' }));
-      }
-    },
-    [stroke.color]
-  );
-
-  const handleSelectBgPreset = (mode: BackgroundMode) => {
-    let next: BackgroundConfig;
-    if (mode === 'white') {
-      next = {
-        ...bgConfig,
-        mode: 'white',
-        fillType: 'solid',
-        color1: '#FFFFFF',
-        opacity: 1,
-      };
-    } else if (mode === 'dark') {
-      next = {
-        ...bgConfig,
-        mode: 'dark',
-        fillType: 'solid',
-        color1: '#1E1E1E',
-        opacity: 1,
-      };
-    } else {
-      // grid or lined: keep custom color/gradient if already customized, otherwise crisp white
-      const baseColor = bgConfig.mode === 'dark' ? '#FFFFFF' : bgConfig.color1;
-      next = {
-        ...bgConfig,
-        mode,
-        color1: baseColor,
-      };
-    }
-    setBgConfig(next);
-    syncDefaultStrokeContrast(next);
-    trackFunction('select_bg_preset', 'background', { bg_mode: mode });
-  };
-
-  const handleChangeBgConfig = (next: BackgroundConfig) => {
-    if (
-      next.mode !== bgConfig.mode ||
-      next.fillType !== bgConfig.fillType ||
-      next.gradientType !== bgConfig.gradientType
-    ) {
-      trackFunction('change_bg_config', 'background', {
-        bg_mode: next.mode,
-        fill_type: next.fillType,
-        gradient_type: next.gradientType,
+      active.set({
+        ...(patch.color !== undefined ? { fill: patch.color } : {}),
+        ...(patch.fontFamily !== undefined ? { fontFamily: patch.fontFamily } : {}),
+        ...(patch.fontSize !== undefined ? { fontSize: patch.fontSize } : {}),
+        dirty: true,
       });
-    }
-    setBgConfig(next);
-    syncDefaultStrokeContrast(next);
-  };
+      active.setCoords();
+      fc.requestRenderAll();
+      refreshSelectionInfo();
+      pushHistory();
+    },
+    [pushHistory, refreshSelectionInfo]
+  );
 
-  const isDarkBg = useMemo(() => isBackgroundDark(bgConfig), [bgConfig]);
-  const showCheckerboard =
-    canvasSize.preset === 'fullscreen' &&
-    bgConfig.mode !== 'white' &&
-    bgConfig.mode !== 'dark' &&
-    bgConfig.opacity < 1;
-
-  // Compute safe screen position for the top-right Pencil button on selected object
-  const pencilBadgePos = useMemo(() => {
-    if (!selectedInfo) return null;
-    const { left, top, width } = selectedInfo.screenRect;
-    const vw = typeof window !== 'undefined' ? window.innerWidth : 1024;
-    const vh = typeof window !== 'undefined' ? window.innerHeight : 768;
-    let badgeLeft = Math.max(12, Math.min(vw - 48, left + width + 8));
-    let badgeTop = Math.max(12, Math.min(vh - 96, top - 38));
-    // Avoid overlapping the top-right Eye trigger (top: 16..52, right: 16..52)
-    if (badgeTop < 64 && badgeLeft > vw - 72) {
-      badgeLeft = Math.max(12, vw - 96);
+  const handleClearCanvas = useCallback(() => {
+    const fc = fabricRef.current;
+    if (!fc) return;
+    fc.clear();
+    polylineHoverPtRef.current = null;
+    setContourPoints([]);
+    bezierEditRef.current = null;
+    setSelectedInfo(null);
+    setClearConfirmOpen(false);
+    applyClipForArtboard();
+    redrawBackground();
+    pushHistory();
+    isDirtyDraftRef.current = false;
+    if (draftSaveTimerRef.current !== null) {
+      window.clearTimeout(draftSaveTimerRef.current);
+      draftSaveTimerRef.current = null;
     }
-    return { left: badgeLeft, top: badgeTop };
-  }, [selectedInfo]);
+    const uid = cloudUserRef.current?.uid;
+    if (uid) {
+      clearLocalDraftBackup(uid);
+      void clearCloudDraft(uid);
+    }
+    trackFunction('clear_canvas', 'canvas');
+  }, [applyClipForArtboard, clearLocalDraftBackup, pushHistory, redrawBackground]);
+
+  const handleSelectBgPreset = useCallback((mode: BackgroundMode) => {
+    setBgConfig((prev) => ({
+      ...prev,
+      mode,
+      ...(mode === 'white' ? { color1: '#FFFFFF', fillType: 'solid', opacity: 1 } : {}),
+      ...(mode === 'dark' ? { color1: '#1E1E1E', fillType: 'solid', opacity: 1 } : {}),
+    }));
+    trackFunction('select_bg_preset', 'background', { mode });
+  }, []);
+
+  const handleTriggerOfflineDownload = useCallback(() => {
+    const html = `<!doctype html>\n${document.documentElement.outerHTML}`;
+    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'index.html';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast(t('offlineSavedToast'));
+  }, [showToast, t]);
+
+  const handleTriggerZipDownload = useCallback(async () => {
+    const backupUrl = `/backup.zip?t=${Date.now()}`;
+    try {
+      const response = await fetch(backupUrl, { cache: 'no-store' });
+      const contentType = response.headers.get('content-type') || '';
+      if (!response.ok || contentType.includes('text/html')) {
+        throw new Error('Backup zip unavailable');
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'zenpainter-backup.zip';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.setTimeout(() => URL.revokeObjectURL(url), 1500);
+      showToast(t('zipBackupSavedToast'));
+    } catch {
+      const a = document.createElement('a');
+      a.href = '/backup.zip';
+      a.download = 'zenpainter-backup.zip';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      showToast(t('zipBackupSavedToast'));
+    }
+  }, [showToast, t]);
+
+  const applyTutorialHidePrefLocally = useCallback((hide: boolean) => {
+    setDontShowTutorialAgain(hide);
+    try {
+      localStorage.setItem(HIDE_TUTORIAL_STORAGE_KEY, String(hide));
+    } catch {
+      // ignore storage errors
+    }
+    if (hide) {
+      setHelpOpen(false);
+    }
+  }, []);
+
+  // Mark draft dirty & schedule auto-save when canvas background/size/export settings change after edits
+  const draftEffectMountedRef = useRef(false);
+  useEffect(() => {
+    if (!draftEffectMountedRef.current) {
+      draftEffectMountedRef.current = true;
+      return;
+    }
+    if (isRestoringHistoryRef.current) return;
+    const fc = fabricRef.current;
+    if (!fc) return;
+    const hasObjs = fc
+      .getObjects()
+      .some((o: any) => !o.excludeFromExport && !o.isEraserPath);
+    if (hasObjs || isDirtyDraftRef.current) {
+      scheduleCloudDraftSave();
+    }
+  }, [bgConfig, canvasSize, exportScope, scheduleCloudDraftSave]);
+
+  // Flush unsaved draft to cloud + local backup when closing or hiding the app
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        flushCloudDraftNow();
+      }
+    };
+    const handlePageHide = () => {
+      flushCloudDraftNow();
+    };
+    window.addEventListener('pagehide', handlePageHide);
+    window.addEventListener('beforeunload', handlePageHide);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.removeEventListener('pagehide', handlePageHide);
+      window.removeEventListener('beforeunload', handlePageHide);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      if (draftSaveTimerRef.current !== null) {
+        window.clearTimeout(draftSaveTimerRef.current);
+      }
+    };
+  }, [flushCloudDraftNow]);
+
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (user) => {
+      setCloudUser(user);
+      if (!user) {
+        draftLoadedForUidRef.current = null;
+        setActiveCloudProjectId(null);
+        setActiveCloudProjectTitle('');
+        return;
+      }
+      let localHide = false;
+      try {
+        localHide = localStorage.getItem(HIDE_TUTORIAL_STORAGE_KEY) === 'true';
+      } catch {
+        localHide = false;
+      }
+      void ensureUserProfile(user, localHide)
+        .then((profile) => {
+          if (profile.hideWelcomeTutorial) {
+            applyTutorialHidePrefLocally(true);
+          }
+        })
+        .catch(() => {
+          // ignore profile sync errors on auth boot
+        });
+
+      // Auto-restore unsaved cloud draft once per signed-in session (excluded from 5-project limit)
+      if (draftLoadedForUidRef.current !== user.uid) {
+        draftLoadedForUidRef.current = user.uid;
+        let localBackup: any = null;
+        try {
+          const raw = localStorage.getItem(`zp_local_draft_${user.uid}`);
+          if (raw) localBackup = JSON.parse(raw);
+        } catch {
+          localBackup = null;
+        }
+
+        void loadCloudDraft(user.uid)
+          .catch(() => null)
+          .then((remoteDraft) => {
+            const fc = fabricRef.current;
+            if (!fc) return;
+            const currentObjs = fc
+              .getObjects()
+              .filter((o: any) => !o.excludeFromExport && !o.isEraserPath);
+            if (currentObjs.length > 0) return;
+
+            const remoteObjs = Array.isArray(remoteDraft?.canvasData?.objects)
+              ? remoteDraft.canvasData.objects
+              : [];
+            const localObjs = Array.isArray(localBackup?.canvasData?.objects)
+              ? localBackup.canvasData.objects
+              : [];
+
+            const useLocal =
+              localObjs.length > 0 &&
+              (remoteObjs.length === 0 ||
+                Number(localBackup?.updatedAtMs || 0) > Number(remoteDraft?.updatedAtMs || 0));
+
+            const chosen = useLocal
+              ? localBackup
+              : remoteObjs.length > 0
+                ? remoteDraft
+                : null;
+            if (!chosen || !chosen.canvasData) return;
+
+            isRestoringHistoryRef.current = true;
+            if (chosen.bgConfig) {
+              setBgConfig(chosen.bgConfig);
+              bgConfigRef.current = chosen.bgConfig;
+            }
+            if (chosen.canvasSize) {
+              setCanvasSize(chosen.canvasSize);
+              canvasSizeRef.current = chosen.canvasSize;
+            }
+            if (chosen.exportScope === 'artwork' || chosen.exportScope === 'canvas') {
+              setExportScope(chosen.exportScope);
+            }
+
+            fc.loadFromJSON(chosen.canvasData, () => {
+              fc.getObjects().forEach((obj: any) => {
+                if (obj.isEraserPath) {
+                  obj.set({
+                    selectable: false,
+                    evented: false,
+                    globalCompositeOperation: 'destination-out',
+                  });
+                } else {
+                  obj.set({
+                    selectable: true,
+                    evented: true,
+                    cornerColor: '#2563EB',
+                    borderColor: '#2563EB',
+                  });
+                  refreshObjectPhotoFill(obj, fc);
+                }
+              });
+              fc.discardActiveObject();
+              applyClipForArtboard();
+              if (chosen.canvasSize) {
+                fitViewportToArtboard(chosen.canvasSize);
+              } else {
+                redrawBackground();
+              }
+              syncHasArtwork();
+              syncFabricToolState();
+              refreshSelectionInfo();
+              isRestoringHistoryRef.current = false;
+              pushHistory();
+              isDirtyDraftRef.current = true;
+              if (chosen.activeProjectId) {
+                setActiveCloudProjectId(chosen.activeProjectId);
+              }
+              if (chosen.activeProjectTitle) {
+                setActiveCloudProjectTitle(chosen.activeProjectTitle);
+              }
+              showToast(t('cloudDraftRestoredToast'));
+            });
+          });
+      }
+    });
+    return () => unsub();
+  }, [
+    applyClipForArtboard,
+    applyTutorialHidePrefLocally,
+    fitViewportToArtboard,
+    pushHistory,
+    redrawBackground,
+    refreshSelectionInfo,
+    showToast,
+    syncFabricToolState,
+    syncHasArtwork,
+    t,
+  ]);
+
+  const handleSaveProjectToCloud = useCallback(
+    async (user: User, options: { projectId?: string; title: string }): Promise<string> => {
+      const fc = fabricRef.current;
+      if (!fc) throw new Error('Canvas not initialized');
+      bezierEditRef.current = null;
+      const serialized = fc.toObject(CUSTOM_FABRIC_PROPS) as Record<string, unknown>;
+      const savedId = await saveCloudProject(user, {
+        projectId: options.projectId,
+        title: options.title,
+        exportScope,
+        canvasSize: canvasSizeRef.current,
+        bgConfig: bgConfigRef.current,
+        canvasData: serialized,
+      });
+      setActiveCloudProjectId(savedId);
+      setActiveCloudProjectTitle(options.title);
+      isDirtyDraftRef.current = false;
+      if (draftSaveTimerRef.current !== null) {
+        window.clearTimeout(draftSaveTimerRef.current);
+        draftSaveTimerRef.current = null;
+      }
+      clearLocalDraftBackup(user.uid);
+      void clearCloudDraft(user.uid);
+      showToast(t('cloudSavedToast'));
+      return savedId;
+    },
+    [clearLocalDraftBackup, exportScope, showToast, t]
+  );
+
+  const handleLoadCloudProject = useCallback(
+    (project: CloudProjectRecord) => {
+      const fc = fabricRef.current;
+      if (!fc) return;
+      bezierEditRef.current = null;
+      polylineHoverPtRef.current = null;
+      setContourPoints([]);
+      setSelectedInfo(null);
+      isRestoringHistoryRef.current = true;
+
+      setBgConfig(project.bgConfig);
+      bgConfigRef.current = project.bgConfig;
+      setCanvasSize(project.canvasSize);
+      canvasSizeRef.current = project.canvasSize;
+      setExportScope(project.exportScope);
+
+      fc.loadFromJSON(project.canvasData, () => {
+        fc.getObjects().forEach((obj: any) => {
+          if (obj.isEraserPath) {
+            obj.set({
+              selectable: false,
+              evented: false,
+              globalCompositeOperation: 'destination-out',
+            });
+          } else {
+            obj.set({
+              selectable: true,
+              evented: true,
+              cornerColor: '#2563EB',
+              borderColor: '#2563EB',
+            });
+            refreshObjectPhotoFill(obj, fc);
+          }
+        });
+        fc.discardActiveObject();
+        applyClipForArtboard();
+        fitViewportToArtboard(project.canvasSize);
+        syncHasArtwork();
+        syncFabricToolState();
+        refreshSelectionInfo();
+        isRestoringHistoryRef.current = false;
+        pushHistory();
+        isDirtyDraftRef.current = false;
+        if (draftSaveTimerRef.current !== null) {
+          window.clearTimeout(draftSaveTimerRef.current);
+          draftSaveTimerRef.current = null;
+        }
+        const uid = cloudUserRef.current?.uid;
+        if (uid) {
+          clearLocalDraftBackup(uid);
+          void clearCloudDraft(uid);
+        }
+        setActiveCloudProjectId(project.id);
+        setActiveCloudProjectTitle(project.title);
+        setCloudModalOpen(false);
+        showToast(t('cloudLoadedToast'));
+      });
+    },
+    [
+      applyClipForArtboard,
+      clearLocalDraftBackup,
+      fitViewportToArtboard,
+      pushHistory,
+      refreshSelectionInfo,
+      showToast,
+      syncFabricToolState,
+      syncHasArtwork,
+      t,
+    ]
+  );
 
   return (
     <div
-      data-app-version={APP_VERSION}
-      className={`relative w-screen h-dvh overflow-hidden select-none ${
-        isDarkBg ? 'dark bg-[#1E1E1E]' : 'bg-white'
-      }`}
-      style={
-        showCheckerboard
-          ? {
-              backgroundColor: '#f8fafc',
-              backgroundImage:
-                'linear-gradient(45deg, #e2e8f0 25%, transparent 25%), linear-gradient(-45deg, #e2e8f0 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #e2e8f0 75%), linear-gradient(-45deg, transparent 75%, #e2e8f0 75%)',
-              backgroundSize: '20px 20px',
-              backgroundPosition: '0 0, 0 10px, 10px -10px, -10px 0px',
-            }
-          : undefined
-      }
+      ref={containerRef}
+      className="relative w-full h-[100dvh] overflow-hidden select-none"
+      style={{ touchAction: 'none' }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        const target = e.target as HTMLElement | null;
+        if (target && target !== containerRef.current && target.tagName !== 'CANVAS') {
+          return;
+        }
+        const nativeEvt = e.nativeEvent as MouseEvent & { pointerType?: string };
+        if (nativeEvt.pointerType === 'touch') return;
+        if (Date.now() - lastRightClickOpenAtRef.current < 300) return;
+        lastRightClickOpenAtRef.current = Date.now();
+        setIsToolbarOpen(true);
+        setActivePopover((prev) => {
+          const next = prev === 'shapes' ? null : 'shapes';
+          trackFunction('toggle_shapes_context_menu', 'ui', {
+            is_open: next === 'shapes',
+          });
+          return next;
+        });
+      }}
     >
-      {/* Hidden invisible version marker (incremented by 0.01 per update) */}
-      <span className="sr-only" aria-hidden="true" data-app-version={APP_VERSION}>
-        {APP_VERSION}
-      </span>
-      {/* Synced Background Canvas (White / Custom / Gradient / Grid / Lined / Dark) */}
+      {/* Background Canvas Layer */}
       <canvas
         ref={bgCanvasRef}
-        className="absolute inset-0 pointer-events-none block"
+        className="absolute inset-0 w-full h-full pointer-events-none"
       />
 
-      {/* Empty Canvas Semi-Transparent Prompt ("Просто рисуй" / localized) */}
-      {isCanvasEmpty && (
-        <div className="absolute inset-0 pointer-events-none flex items-center justify-center px-6 z-10">
-          <span
-            className={`text-2xl sm:text-3xl font-medium tracking-tight select-none transition-opacity duration-200 ${
-              isDarkBg ? 'text-white/20' : 'text-slate-900/20'
-            }`}
-          >
+      {/* Fabric.js Main Interactive Canvas */}
+      <canvas ref={canvasElRef} className="block w-full h-full" />
+
+      {/* Live Preview Overlay for Textured Brushes (Мазок / Валик / etc.) */}
+      <canvas
+        ref={brushPreviewCanvasRef}
+        className="absolute inset-0 w-full h-full pointer-events-none z-10"
+      />
+
+      {/* Hidden Image Upload Input */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp,image/svg+xml"
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = '';
+          if (!file) return;
+          void downscaleImageFileToDataUrl(file).then((url) => {
+            handleAddImageDataUrl(url);
+            trackFunction('upload_image', 'canvas', {
+              file_size_kb: Math.round(file.size / 1024),
+            });
+          });
+        }}
+      />
+
+      {/* Empty Canvas Subtle Centered Hint */}
+      {!hasArtwork && !activePopover && !helpOpen && (
+        <div
+          className={`pointer-events-none fixed inset-0 z-10 flex items-center justify-center transition-opacity duration-300 ${
+            isDarkBg ? 'text-white/15' : 'text-slate-900/15'
+          }`}
+        >
+          <span className="text-xl sm:text-2xl font-medium tracking-tight">
             {t('emptyCanvasHint')}
           </span>
         </div>
       )}
 
-      {/* Interactive Fabric.js Canvas */}
-      <div className="absolute inset-0">
-        <canvas ref={fabricElRef} className="block" />
-      </div>
-
-      {/* Hidden File Input for Image Upload */}
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="image/png,image/jpeg,image/webp,image/svg+xml"
-        onChange={handleImageFileChange}
-        className="hidden"
-      />
-
-      {/* Top-Right Corner Pencil Button on Selected Shape / Photo / Text */}
-      {!isEditingBezier && !isEditingContour && selectedInfo && pencilBadgePos && (
-        <button
-          type="button"
-          onClick={() => {
-            setActivePopover(null);
-            setObjectEditorOpen((prev) => {
-              const next = !prev;
-              trackFunction('toggle_object_editor', 'ui', {
-                is_open: next,
-                source: 'pencil_badge',
-              });
-              return next;
-            });
-          }}
+      {/* Contour / Polyline Floating Action Bar */}
+      {contourPoints.length > 0 && (
+        <div
           onPointerDown={(e) => e.stopPropagation()}
           onTouchStart={(e) => e.stopPropagation()}
-          title={t('editObject')}
-          aria-label={t('editObject')}
-          style={{
-            left: `${pencilBadgePos.left}px`,
-            top: `${pencilBadgePos.top}px`,
-          }}
-          className={`fixed z-30 w-9 h-9 rounded-full border shadow-lg flex items-center justify-center transition-colors cursor-pointer after:content-[''] after:absolute after:-inset-1.5 ${
-            objectEditorOpen
-              ? 'bg-blue-600 text-white border-blue-500'
-              : isDarkBg
-                ? 'bg-neutral-900/95 text-neutral-100 border-neutral-600 hover:bg-neutral-800'
-                : 'bg-white/95 text-slate-800 border-slate-200 hover:bg-slate-50'
+          className={`fixed bottom-4 left-1/2 -translate-x-1/2 z-40 px-3 py-2 rounded-2xl border backdrop-blur-md flex items-center gap-2 shadow-xl ${
+            isDarkBg
+              ? 'bg-neutral-900/95 border-neutral-700 text-neutral-100'
+              : 'bg-white/95 border-slate-200 text-slate-800'
           }`}
         >
-          <Pencil className="w-4 h-4" />
-        </button>
+          <span className="text-xs font-medium px-1 hidden sm:inline">
+            {t('contourHint')}
+          </span>
+          {contourPoints.length >= 2 && (
+            <button
+              type="button"
+              onClick={() => commitContourPoints(false)}
+              className="min-h-[36px] px-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold cursor-pointer"
+            >
+              {t('contourFinish')}
+            </button>
+          )}
+          {contourPoints.length >= 3 && (
+            <button
+              type="button"
+              onClick={() => commitContourPoints(true)}
+              className="min-h-[36px] px-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold cursor-pointer"
+            >
+              {t('contourClose')}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => {
+              polylineHoverPtRef.current = null;
+              snapIndicatorRef.current = null;
+              setContourPoints([]);
+              fabricRef.current?.requestRenderAll();
+            }}
+            className={`min-h-[36px] px-3 rounded-xl text-xs font-medium cursor-pointer ${
+              isDarkBg ? 'bg-neutral-800 hover:bg-neutral-700' : 'bg-slate-100 hover:bg-slate-200'
+            }`}
+          >
+            {t('contourCancel')}
+          </button>
+        </div>
       )}
 
-      {/* Floating Eye Trigger + Vertical Sidebar + Quick-Select Button */}
+      {/* Corner Rounding Live HUD Pill during Long-Press Vertex Drag */}
+      {cornerRoundHudRatio !== null && (
+        <div
+          className={`fixed bottom-4 left-1/2 -translate-x-1/2 z-40 px-4 py-2 rounded-2xl border backdrop-blur-md flex items-center gap-2 shadow-xl pointer-events-none ${
+            isDarkBg
+              ? 'bg-neutral-900/95 border-amber-500/60 text-amber-300'
+              : 'bg-white/95 border-amber-400 text-amber-700'
+          }`}
+        >
+          <span className="text-xs font-semibold">
+            {t('cornerRadiusLabel')}: {cornerRoundHudRatio}%
+          </span>
+        </div>
+      )}
+
+      {/* Toast Notification */}
+      {toastMessage && (
+        <div className="fixed bottom-4 left-4 z-50 px-3.5 py-2 rounded-xl bg-neutral-900/90 text-white text-xs font-medium shadow-lg backdrop-blur-md pointer-events-none">
+          {toastMessage}
+        </div>
+      )}
+
+      {/* Right Sidebar & Floating Eye Trigger */}
       <RightSidebar
         t={t}
-        isOpen={sidebarOpen}
-        onToggleOpen={handleToggleSidebar}
+        isOpen={isToolbarOpen}
+        onToggleOpen={() => setIsToolbarOpen((o) => !o)}
         activePopover={activePopover}
-        onTogglePopover={handleTogglePopover}
+        onTogglePopover={(pop) =>
+          setActivePopover((prev) => (prev === pop ? null : pop))
+        }
         activeMode={activeMode}
-        onSelectMode={handleSelectMode}
-        onActivateLasso={handleActivateLasso}
-        onActivateEraser={handleActivateEraser}
-        onRequestClearCanvas={() => {
-          setActivePopover(null);
-          setObjectEditorOpen(false);
-          setClearConfirmOpen(true);
-          trackFunction('request_clear_canvas', 'edit', { source: 'sidebar_eraser_longpress' });
+        onSelectMode={(m) => {
+          if (contourPointsRef.current.length > 0) {
+            polylineHoverPtRef.current = null;
+            setContourPoints([]);
+          }
+          setActiveMode(m);
         }}
+        onActivateLasso={() => {
+          if (contourPointsRef.current.length > 0) {
+            polylineHoverPtRef.current = null;
+            setContourPoints([]);
+          }
+          setActiveMode('lasso');
+          setActivePopover(null);
+        }}
+        onActivateEraser={() => {
+          if (contourPointsRef.current.length > 0) {
+            polylineHoverPtRef.current = null;
+            setContourPoints([]);
+          }
+          if (activeMode === 'eraser') {
+            setActivePopover((prev) => (prev === 'eraser' ? null : 'eraser'));
+          } else {
+            setActiveMode('eraser');
+            setActivePopover('eraser');
+          }
+        }}
+        onRequestClearCanvas={() => setClearConfirmOpen(true)}
         onTriggerImageUpload={() => {
-          trackFunction('trigger_image_upload', 'insert');
+          setActivePopover(null);
           fileInputRef.current?.click();
         }}
         onUndo={handleUndo}
@@ -5328,101 +4476,18 @@ export default function App() {
         isDarkBg={isDarkBg}
       />
 
-      {offlineToast && (
-        <div
-          className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 px-3.5 py-2 rounded-2xl border backdrop-blur-md flex items-center gap-2 shadow-xl pointer-events-none ${
-            isDarkBg
-              ? 'bg-neutral-900/95 border-emerald-500/40 text-emerald-300'
-              : 'bg-white/95 border-emerald-200 text-emerald-700'
-          }`}
-        >
-          <Check className="w-3.5 h-3.5 shrink-0" />
-          <span className="text-xs font-semibold whitespace-nowrap">
-            {t('offlineSavedToast')}
-          </span>
-        </div>
-      )}
-
-      {selectAllToast && (
-        <div
-          className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 px-3.5 py-2 rounded-2xl border backdrop-blur-md flex items-center gap-2 shadow-xl pointer-events-none ${
-            isDarkBg
-              ? 'bg-neutral-900/95 border-blue-500/40 text-blue-300'
-              : 'bg-white/95 border-blue-200 text-blue-700'
-          }`}
-        >
-          <Check className="w-3.5 h-3.5 shrink-0" />
-          <span className="text-xs font-semibold whitespace-nowrap">
-            {t('selectedAllToast')}
-          </span>
-        </div>
-      )}
-
-      {pastedToast && (
-        <div
-          className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 px-3.5 py-2 rounded-2xl border backdrop-blur-md flex items-center gap-2 shadow-xl pointer-events-none ${
-            isDarkBg
-              ? 'bg-neutral-900/95 border-blue-500/40 text-blue-300'
-              : 'bg-white/95 border-blue-200 text-blue-700'
-          }`}
-        >
-          <Check className="w-3.5 h-3.5 shrink-0" />
-          <span className="text-xs font-semibold whitespace-nowrap">
-            {t('pastedToast')}
-          </span>
-        </div>
-      )}
-
-      {pasteErrorKind && (
-        <div
-          className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 px-3.5 py-2 rounded-2xl border backdrop-blur-md flex items-center gap-2 shadow-xl pointer-events-none ${
-            isDarkBg
-              ? 'bg-neutral-900/95 border-amber-500/40 text-amber-300'
-              : 'bg-white/95 border-amber-200 text-amber-700'
-          }`}
-        >
-          <ClipboardPaste className="w-3.5 h-3.5 shrink-0" />
-          <span className="text-xs font-semibold whitespace-nowrap">
-            {pasteErrorKind === 'empty'
-              ? t('pasteClipboardEmptyToast')
-              : t('pasteUnavailableToast')}
-          </span>
-        </div>
-      )}
-
-      {/* Selected Object Live Re-Editor Popover */}
-      {selectedInfo && objectEditorOpen && (
-        <ObjectEditorPopover
-          t={t}
-          info={selectedInfo}
-          onUpdateStroke={handleUpdateSelectedStroke}
-          onUpdateFill={handleUpdateSelectedFill}
-          onUpdateGrid={handleUpdateSelectedGrid}
-          onUpdateOpacity={handleUpdateSelectedOpacity}
-          onUpdateCornerRadius={handleUpdateSelectedCornerRadius}
-          onUpdateText={handleUpdateSelectedText}
-          onEnterTextEdit={handleEnterTextEdit}
-          onFlip={handleFlipSelected}
-          onBringToFront={handleBringToFront}
-          onSendToBack={handleSendToBack}
-          onDuplicate={handleDuplicateSelected}
-          onDelete={handleDeleteSelected}
-          onRequestClearCanvas={() => {
-            setObjectEditorOpen(false);
-            setClearConfirmOpen(true);
-            trackFunction('request_clear_canvas', 'edit', { source: 'object_editor_longpress' });
-          }}
-          onClose={() => setObjectEditorOpen(false)}
-          isDarkBg={isDarkBg}
-        />
-      )}
-
       {/* Tool Popovers */}
-      {sidebarOpen && activePopover === 'shapes' && (
+      {activePopover === 'shapes' && (
         <ShapesPopover
           t={t}
           activeMode={activeMode}
-          onSelectMode={handleSelectMode}
+          onSelectMode={(m) => {
+            if (contourPointsRef.current.length > 0) {
+              polylineHoverPtRef.current = null;
+              setContourPoints([]);
+            }
+            setActiveMode(m);
+          }}
           rectGrid={rectGrid}
           onChangeRectGrid={setRectGrid}
           onUpdateSelectedGrid={handleUpdateSelectedGrid}
@@ -5433,7 +4498,10 @@ export default function App() {
           closedContour={closedContour}
           onToggleClosedContour={setClosedContour}
           snapEnabled={snapEnabled}
-          onToggleSnapEnabled={setSnapEnabled}
+          onToggleSnapEnabled={(next) => {
+            setSnapEnabled(next);
+            setTimeout(() => applyEndpointControlsToSelection(), 0);
+          }}
           stroke={stroke}
           onChangeStroke={setStroke}
           fill={fill}
@@ -5447,30 +4515,27 @@ export default function App() {
           onMorphSelectedPolygon={handleMorphSelectedPolygon}
           onMorphSelectedArrow={handleMorphSelectedArrow}
           onClearSelection={() => {
-            const fc = fabricCanvasRef.current;
-            if (!fc) return;
-            fc.discardActiveObject();
-            fc.requestRenderAll();
+            fabricRef.current?.discardActiveObject();
+            fabricRef.current?.requestRenderAll();
             setSelectedInfo(null);
-            setObjectEditorOpen(false);
           }}
           isDarkBg={isDarkBg}
         />
       )}
 
-      {sidebarOpen && activePopover === 'text' && (
+      {activePopover === 'text' && (
         <TextModal
           t={t}
           onAddText={handleAddText}
-          defaultColor={stroke.color}
+          defaultColor={isDarkBg ? '#FFFFFF' : '#0F172A'}
           isDarkBg={isDarkBg}
         />
       )}
 
-      {sidebarOpen && activePopover === 'stamps' && (
+      {activePopover === 'stamps' && (
         <StampsPopover
           t={t}
-          lang={resolvedLang}
+          lang={lang}
           onAddStamp={handleAddStamp}
           onAddEmoji={handleAddEmoji}
           defaultColor={stroke.color}
@@ -5478,418 +4543,150 @@ export default function App() {
         />
       )}
 
-      {sidebarOpen && activePopover === 'eraser' && (
+      {activePopover === 'eraser' && (
         <EraserPopover
           t={t}
           size={eraserSize}
           onChangeSize={setEraserSize}
           hasSelectedObject={Boolean(selectedInfo)}
           onDeleteSelected={handleDeleteSelected}
-          onRequestClearCanvas={() => {
-            setActivePopover(null);
-            setClearConfirmOpen(true);
-            trackFunction('request_clear_canvas', 'edit', { source: 'eraser_popover_longpress' });
-          }}
+          onRequestClearCanvas={() => setClearConfirmOpen(true)}
           isDarkBg={isDarkBg}
         />
       )}
 
-      {sidebarOpen && activePopover === 'actions' && (
+      {activePopover === 'actions' && (
         <ActionsPopover
           t={t}
           bgConfig={bgConfig}
-          onChangeBgConfig={handleChangeBgConfig}
+          onChangeBgConfig={setBgConfig}
           onSelectBgPreset={handleSelectBgPreset}
           canvasSize={canvasSize}
-          onChangeCanvasSize={handleChangeCanvasSize}
+          onChangeCanvasSize={(next, fit) => {
+            setCanvasSize(next);
+            canvasSizeRef.current = next;
+            applyClipForArtboard();
+            if (fit) {
+              fitViewportToArtboard(next);
+            } else {
+              redrawBackground();
+            }
+          }}
           exportScope={exportScope}
           onChangeExportScope={setExportScope}
           onExport={(fmt) => {
+            if (!fabricRef.current) return;
             exportCanvasImage(
-              fabricCanvasRef.current,
+              fabricRef.current,
               bgConfig,
               fmt,
               canvasSize,
-              artboardCenterRef.current,
+              ARTBOARD_CENTER,
               exportScope
             );
-            trackFunction('export_image', 'export', {
-              format: fmt,
-              scope: exportScope,
-              canvas_preset: canvasSize.preset,
-            });
-            setActivePopover(null);
+            trackFunction('export_image', 'export', { format: fmt, scope: exportScope });
           }}
           zoomPercent={zoomPercent}
-          onResetView={handleResetView}
+          onResetView={() => fitViewportToArtboard(canvasSizeRef.current)}
           languagePref={languagePref}
-          onChangeLanguage={handleChangeLanguage}
+          onChangeLanguage={(pref) => {
+            setLanguagePref(pref);
+            saveLanguagePreference(pref);
+          }}
           onOpenHelp={() => {
             setActivePopover(null);
-            setHelpInitialFullscreen(false);
             setHelpOpen(true);
-            trackFunction('open_help_from_menu', 'help');
           }}
+          onOpenCloudSave={() => {
+            setActivePopover(null);
+            setCloudModalOpen(true);
+          }}
+          cloudUserEmail={cloudUser?.email || cloudUser?.displayName || null}
           onTriggerOfflineDownload={handleTriggerOfflineDownload}
+          onTriggerZipDownload={handleTriggerZipDownload}
           isDarkBg={isDarkBg}
         />
       )}
 
-      {/* Live Rotation Angle Pill (highlights gently at 45° / 90° snap steps) */}
-      {rotatingAngleHud && !cornerRoundHud && (
-        <div
-          className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 px-3 py-1.5 rounded-2xl border backdrop-blur-md flex items-center gap-2 shadow-xl pointer-events-none transition-colors ${
-            rotatingAngleHud.isSnapped
-              ? isDarkBg
-                ? rotatingAngleHud.isCardinal
-                  ? 'bg-neutral-900/95 border-emerald-500/70 text-emerald-300'
-                  : 'bg-neutral-900/95 border-blue-500/70 text-blue-300'
-                : rotatingAngleHud.isCardinal
-                  ? 'bg-white/95 border-emerald-400 text-emerald-700'
-                  : 'bg-white/95 border-blue-400 text-blue-700'
-              : isDarkBg
-                ? 'bg-neutral-900/95 border-neutral-700 text-neutral-100'
-                : 'bg-white/95 border-slate-200 text-slate-800'
-          }`}
-        >
-          <RotateCw className="w-3.5 h-3.5 shrink-0" />
-          <span className="text-xs font-bold tabular-nums">
-            {rotatingAngleHud.deg}°
-          </span>
-          {rotatingAngleHud.isSnapped && (
-            <span
-              className={`w-2 h-2 rounded-full shrink-0 ${
-                rotatingAngleHud.isCardinal ? 'bg-emerald-500' : 'bg-blue-500'
-              }`}
-            />
-          )}
-        </div>
+      {/* Floating Selected Object Inspector */}
+      {selectedInfo && activeMode === 'select' && activePopover !== 'shapes' && (
+        <ObjectEditorPopover
+          t={t}
+          info={selectedInfo}
+          onUpdateStroke={handleUpdateSelectedStroke}
+          onUpdateFill={handleUpdateSelectedFill}
+          onUpdateGrid={handleUpdateSelectedGrid}
+          onUpdateOpacity={handleUpdateSelectedOpacity}
+          onUpdateCornerRadius={handleUpdateSelectedCornerRadius}
+          onUpdateText={handleUpdateSelectedText}
+          onEnterTextEdit={() => {
+            const fc = fabricRef.current;
+            const obj = fc?.getActiveObject();
+            if (obj && (obj.type === 'i-text' || obj.type === 'textbox')) {
+              obj.enterEditing();
+              obj.selectAll?.();
+              fc.requestRenderAll();
+            }
+          }}
+          onFlip={(axis) => {
+            const fc = fabricRef.current;
+            const obj = fc?.getActiveObject();
+            if (!fc || !obj) return;
+            if (axis === 'x') obj.set('flipX', !obj.flipX);
+            else obj.set('flipY', !obj.flipY);
+            fc.requestRenderAll();
+            pushHistory();
+          }}
+          onBringToFront={() => {
+            const fc = fabricRef.current;
+            const obj = fc?.getActiveObject();
+            if (!fc || !obj) return;
+            obj.bringToFront();
+            fc.requestRenderAll();
+            pushHistory();
+          }}
+          onSendToBack={() => {
+            const fc = fabricRef.current;
+            const obj = fc?.getActiveObject();
+            if (!fc || !obj) return;
+            obj.sendToBack();
+            fc.requestRenderAll();
+            pushHistory();
+          }}
+          onDuplicate={handleDuplicateSelected}
+          onDelete={handleDeleteSelected}
+          onRequestClearCanvas={() => setClearConfirmOpen(true)}
+          onClose={() => {
+            fabricRef.current?.discardActiveObject();
+            fabricRef.current?.requestRenderAll();
+            setSelectedInfo(null);
+          }}
+          isDarkBg={isDarkBg}
+        />
       )}
 
-      {/* Live Corner Rounding Floating Pill (on Long-Tap of Selection Corner Handle) */}
-      {cornerRoundHud && (
-        <div
-          onPointerDown={(e) => e.stopPropagation()}
-          onTouchStart={(e) => e.stopPropagation()}
-          className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 px-3.5 py-2 rounded-2xl border backdrop-blur-md flex items-center gap-2.5 shadow-xl ${
-            isDarkBg
-              ? 'bg-neutral-900/95 border-amber-500/60 text-neutral-100'
-              : 'bg-white/95 border-amber-400 text-slate-900'
-          }`}
-        >
-          <span className="w-2.5 h-2.5 rounded-full bg-amber-500 shrink-0 animate-pulse" />
-          <span className="text-xs font-semibold whitespace-nowrap">
-            {t('cornerRadiusLabel')}:{' '}
-            <span className="tabular-nums text-amber-500">{cornerRoundHud.percent}%</span>
-          </span>
-          <span className={`text-[11px] hidden sm:inline ${isDarkBg ? 'text-neutral-400' : 'text-slate-500'}`}>
-            • {t('cornerRoundActiveHint')}
-          </span>
-          <button
-            type="button"
-            onClick={() => {
-              const fc = fabricCanvasRef.current;
-              const armed = cornerRoundingArmedObjRef.current;
-              if (armed) {
-                armed.set({
-                  cornerColor: '#2563EB',
-                  borderColor: '#2563EB',
-                });
-                cornerRoundingArmedObjRef.current = null;
-              }
-              cornerRoundingDragRef.current = null;
-              trackFunction('finish_corner_rounding', 'edit', {
-                percent: cornerRoundHud.percent,
-                source: 'hud_done',
-              });
-              setCornerRoundHud(null);
-              if (fc) {
-                fc.requestRenderAll();
-                saveHistory();
-              }
-            }}
-            className="min-h-[30px] px-2.5 py-1 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-[11px] font-semibold cursor-pointer"
-          >
-            {t('cornerRoundDone')}
-          </button>
-        </div>
-      )}
-
-      {/* Contextual Floating Bar for Bezier Curve Editing */}
-      {isEditingBezier && (
-        <div
-          onPointerDown={(e) => e.stopPropagation()}
-          onTouchStart={(e) => e.stopPropagation()}
-          className={`fixed bottom-4 left-1/2 -translate-x-1/2 z-40 px-3 py-2 rounded-2xl border backdrop-blur-md flex items-center gap-2 shadow-xl ${
-            isDarkBg
-              ? 'bg-neutral-900/95 border-neutral-700 text-neutral-100'
-              : 'bg-white/95 border-slate-200 text-slate-800'
-          }`}
-        >
-          <span className="text-xs font-medium px-1.5 hidden sm:inline">
-            {t('bezierHint')}
-          </span>
-          <button
-            type="button"
-            onClick={() => finalizeBezierSession(false)}
-            className="min-h-[38px] px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
-          >
-            <Check className="w-3.5 h-3.5" />
-            <span>{t('bezierDone')}</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => finalizeBezierSession(true)}
-            className={`min-h-[38px] px-3 py-1.5 rounded-xl text-xs font-medium flex items-center gap-1 cursor-pointer ${
-              isDarkBg
-                ? 'bg-neutral-800 hover:bg-neutral-700 text-red-400'
-                : 'bg-slate-100 hover:bg-slate-200 text-red-600'
-            }`}
-          >
-            <X className="w-3.5 h-3.5" />
-            <span>{t('bezierCancel')}</span>
-          </button>
-        </div>
-      )}
-
-      {/* Contextual Floating Bar for Multi-Segment Closed Contour */}
-      {isEditingContour && (
-        <div
-          onPointerDown={(e) => e.stopPropagation()}
-          onTouchStart={(e) => e.stopPropagation()}
-          className={`fixed bottom-4 left-1/2 -translate-x-1/2 z-40 px-3 py-2 rounded-2xl border backdrop-blur-md flex items-center gap-2 shadow-xl ${
-            isDarkBg
-              ? 'bg-neutral-900/95 border-neutral-700 text-neutral-100'
-              : 'bg-white/95 border-slate-200 text-slate-800'
-          }`}
-        >
-          <span className="text-xs font-medium px-1.5 hidden sm:inline">
-            {t('contourHint')}
-          </span>
-          <button
-            type="button"
-            onClick={() => finalizeContourSession(false)}
-            className="min-h-[38px] px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
-          >
-            <Check className="w-3.5 h-3.5" />
-            <span>{t('contourClose')}</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => finalizeContourSession(true)}
-            className={`min-h-[38px] px-3 py-1.5 rounded-xl text-xs font-medium flex items-center gap-1 cursor-pointer ${
-              isDarkBg
-                ? 'bg-neutral-800 hover:bg-neutral-700 text-red-400'
-                : 'bg-slate-100 hover:bg-slate-200 text-red-600'
-            }`}
-          >
-            <X className="w-3.5 h-3.5" />
-            <span>{t('contourCancel')}</span>
-          </button>
-        </div>
-      )}
-
-      {/* Contextual Object Bar when an object is actively selected */}
-      {!isEditingBezier && !isEditingContour && activeMode === 'select' && selectedInfo && (
-        <div
-          onPointerDown={(e) => e.stopPropagation()}
-          onTouchStart={(e) => e.stopPropagation()}
-          className={`fixed bottom-4 left-1/2 -translate-x-1/2 z-30 px-2 py-1.5 rounded-2xl border backdrop-blur-md flex items-center gap-1 shadow-xl max-w-[calc(100vw-24px)] overflow-x-auto ${
-            isDarkBg
-              ? 'bg-neutral-900/95 border-neutral-700 text-neutral-100'
-              : 'bg-white/95 border-slate-200 text-slate-800'
-          }`}
-        >
-          <button
-            type="button"
-            onClick={() => {
-              setActivePopover(null);
-              setObjectEditorOpen((prev) => {
-                const next = !prev;
-                trackFunction('toggle_object_editor', 'ui', {
-                  is_open: next,
-                  source: 'object_quick_bar',
-                });
-                return next;
-              });
-            }}
-            className={`min-h-[38px] px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
-              objectEditorOpen
-                ? 'bg-blue-600 text-white'
-                : isDarkBg
-                  ? 'bg-neutral-800 hover:bg-neutral-700'
-                  : 'bg-slate-100 hover:bg-slate-200'
-            }`}
-          >
-            <Pencil className="w-3.5 h-3.5" />
-            <span>{t('editObject')}</span>
-          </button>
-          <button
-            type="button"
-            onClick={handleDuplicateSelected}
-            className={`min-h-[38px] px-3 py-1.5 rounded-xl text-xs font-medium flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
-              isDarkBg ? 'hover:bg-neutral-800' : 'hover:bg-slate-100'
-            }`}
-          >
-            <Copy className="w-3.5 h-3.5" />
-            <span>{t('objDuplicate')}</span>
-          </button>
-          <button
-            type="button"
-            onClick={handleBringToFront}
-            className={`min-h-[38px] px-3 py-1.5 rounded-xl text-xs font-medium flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
-              isDarkBg ? 'hover:bg-neutral-800' : 'hover:bg-slate-100'
-            }`}
-          >
-            <Layers className="w-3.5 h-3.5" />
-            <span>{t('objFront')}</span>
-          </button>
-          <button
-            type="button"
-            onPointerDown={(e) => {
-              e.stopPropagation();
-              if (bottomDeleteLongPressTimerRef.current !== null) {
-                window.clearTimeout(bottomDeleteLongPressTimerRef.current);
-                bottomDeleteLongPressTimerRef.current = null;
-              }
-              bottomDeleteLongPressedRef.current = false;
-              bottomDeletePressStartRef.current = { x: e.clientX, y: e.clientY };
-              setBottomDeletePressing(true);
-              bottomDeleteLongPressTimerRef.current = window.setTimeout(() => {
-                bottomDeleteLongPressedRef.current = true;
-                bottomDeleteLongPressTimerRef.current = null;
-                setBottomDeletePressing(false);
-                if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
-                  navigator.vibrate(18);
-                }
-                setClearConfirmOpen(true);
-                trackFunction('request_clear_canvas', 'edit', { source: 'quick_bar_longpress' });
-              }, 450);
-            }}
-            onPointerMove={(e) => {
-              const start = bottomDeletePressStartRef.current;
-              if (start && Math.hypot(e.clientX - start.x, e.clientY - start.y) > 10) {
-                if (bottomDeleteLongPressTimerRef.current !== null) {
-                  window.clearTimeout(bottomDeleteLongPressTimerRef.current);
-                  bottomDeleteLongPressTimerRef.current = null;
-                }
-                bottomDeletePressStartRef.current = null;
-                setBottomDeletePressing(false);
-              }
-            }}
-            onPointerUp={() => {
-              if (bottomDeleteLongPressTimerRef.current !== null) {
-                window.clearTimeout(bottomDeleteLongPressTimerRef.current);
-                bottomDeleteLongPressTimerRef.current = null;
-              }
-              bottomDeletePressStartRef.current = null;
-              setBottomDeletePressing(false);
-            }}
-            onPointerCancel={() => {
-              if (bottomDeleteLongPressTimerRef.current !== null) {
-                window.clearTimeout(bottomDeleteLongPressTimerRef.current);
-                bottomDeleteLongPressTimerRef.current = null;
-              }
-              bottomDeletePressStartRef.current = null;
-              setBottomDeletePressing(false);
-            }}
-            onPointerLeave={() => {
-              if (bottomDeleteLongPressTimerRef.current !== null) {
-                window.clearTimeout(bottomDeleteLongPressTimerRef.current);
-                bottomDeleteLongPressTimerRef.current = null;
-              }
-              bottomDeletePressStartRef.current = null;
-              setBottomDeletePressing(false);
-            }}
-            onContextMenu={(e) => e.preventDefault()}
-            onClick={() => {
-              if (bottomDeleteLongPressedRef.current) {
-                bottomDeleteLongPressedRef.current = false;
-                return;
-              }
-              handleDeleteSelected();
-            }}
-            title={t('deleteClearHint')}
-            className={`min-h-[38px] px-3 py-1.5 rounded-xl text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-500/10 flex items-center gap-1.5 whitespace-nowrap cursor-pointer touch-manipulation transition-all ${
-              bottomDeletePressing ? 'scale-95 ring-2 ring-red-500/60' : ''
-            }`}
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-            <span>{t('objDelete')}</span>
-          </button>
-        </div>
-      )}
-
-      {/* Contextual Floating Bar for Marching-Ants Freehand Lasso Mode */}
-      {!isEditingBezier && !isEditingContour && activeMode === 'lasso' && (
-        <div
-          onPointerDown={(e) => e.stopPropagation()}
-          onTouchStart={(e) => e.stopPropagation()}
-          className={`fixed bottom-4 left-1/2 -translate-x-1/2 z-30 px-3 py-2 rounded-2xl border backdrop-blur-md flex items-center gap-2 shadow-xl max-w-[calc(100vw-24px)] ${
-            isDarkBg
-              ? 'bg-neutral-900/95 border-blue-500/50 text-neutral-100'
-              : 'bg-white/95 border-blue-300 text-slate-800'
-          }`}
-        >
-          <Scissors className="w-3.5 h-3.5 text-blue-500 shrink-0" />
-          <span className="text-xs font-medium truncate">{t('lassoHint')}</span>
-          <button
-            type="button"
-            onClick={() => handleSelectMode('select')}
-            className={`min-h-[32px] px-2.5 py-1 rounded-xl text-xs font-semibold flex items-center gap-1 shrink-0 cursor-pointer ${
-              isDarkBg
-                ? 'bg-neutral-800 hover:bg-neutral-700 text-neutral-200'
-                : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
-            }`}
-          >
-            <X className="w-3.5 h-3.5" />
-            <span>{t('contourCancel')}</span>
-          </button>
-        </div>
-      )}
-
-      {/* Clear Entire Canvas Confirmation Dialog (Triggered via Long-Tap on Delete / Eraser) */}
+      {/* Clear Canvas Confirmation Modal */}
       {clearConfirmOpen && (
         <div
-          onPointerDown={(e) => e.stopPropagation()}
-          onTouchStart={(e) => e.stopPropagation()}
-          onClick={() => {
-            trackFunction('cancel_clear_canvas', 'edit', { source: 'backdrop' });
-            setClearConfirmOpen(false);
-          }}
-          className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4 backdrop-blur-sm"
+          onClick={() => setClearConfirmOpen(false)}
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className={`w-full max-w-sm rounded-3xl border p-5 shadow-2xl ${
+            className={`w-full max-w-xs rounded-2xl border p-5 space-y-4 shadow-2xl ${
               isDarkBg
                 ? 'bg-neutral-900 border-neutral-700 text-neutral-100'
                 : 'bg-white border-slate-200 text-slate-900'
             }`}
           >
-            <div className="flex items-start gap-3 mb-4">
-              <div className="w-10 h-10 rounded-2xl bg-red-500/15 text-red-500 flex items-center justify-center shrink-0">
-                <Trash2 className="w-5 h-5" />
-              </div>
-              <div className="min-w-0">
-                <h3 className="text-sm font-bold">{t('clearCanvas')}</h3>
-                <p
-                  className={`text-xs mt-1 leading-relaxed ${
-                    isDarkBg ? 'text-neutral-400' : 'text-slate-500'
-                  }`}
-                >
-                  {t('clearConfirmPrompt')}
-                </p>
-              </div>
+            <div className="text-sm font-semibold text-center">
+              {t('clearConfirmPrompt')}
             </div>
-            <div className="flex items-center justify-end gap-2">
+            <div className="grid grid-cols-2 gap-2">
               <button
                 type="button"
-                onClick={() => {
-                  trackFunction('cancel_clear_canvas', 'edit', { source: 'cancel_button' });
-                  setClearConfirmOpen(false);
-                }}
-                className={`min-h-[38px] px-4 py-2 rounded-xl text-xs font-semibold cursor-pointer ${
+                onClick={() => setClearConfirmOpen(false)}
+                className={`min-h-[42px] rounded-xl text-xs font-semibold cursor-pointer ${
                   isDarkBg
                     ? 'bg-neutral-800 hover:bg-neutral-700 text-neutral-200'
                     : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
@@ -5900,7 +4697,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={handleClearCanvas}
-                className="min-h-[38px] px-4 py-2 rounded-xl text-xs font-semibold bg-red-600 hover:bg-red-700 text-white cursor-pointer"
+                className="min-h-[42px] rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-semibold cursor-pointer"
               >
                 {t('clearConfirmYes')}
               </button>
@@ -5909,120 +4706,52 @@ export default function App() {
         </div>
       )}
 
-      {/* Contextual Empty-Canvas Long-Tap Paste Menu in Select Mode */}
-      {canvasPasteMenu && activeMode === 'select' && (
-        <div
-          onPointerDown={(e) => e.stopPropagation()}
-          onTouchStart={(e) => e.stopPropagation()}
-          style={{
-            left: `${Math.max(
-              canvasPasteMenu.waitingNativePaste ? 140 : 76,
-              Math.min(
-                (typeof window !== 'undefined' ? window.innerWidth : 1024) -
-                  (canvasPasteMenu.waitingNativePaste ? 140 : 76),
-                canvasPasteMenu.clientX
-              )
-            )}px`,
-            top: `${Math.max(
-              62,
-              Math.min(
-                (typeof window !== 'undefined' ? window.innerHeight : 768) - 48,
-                canvasPasteMenu.clientY > 92
-                  ? canvasPasteMenu.clientY - 14
-                  : canvasPasteMenu.clientY + 48
-              )
-            )}px`,
-          }}
-          className={`fixed -translate-x-1/2 -translate-y-full z-40 p-1 rounded-2xl border backdrop-blur-md shadow-2xl flex items-center gap-1.5 ${
-            isDarkBg
-              ? 'bg-neutral-900/95 border-neutral-700 text-neutral-100 shadow-black/50'
-              : 'bg-white/95 border-slate-200 text-slate-800 shadow-slate-900/15'
-          }`}
-        >
-          {canvasPasteMenu.waitingNativePaste ? (
-            <div className="relative flex items-center gap-1.5">
-              <div
-                ref={pasteCatcherRef}
-                role="textbox"
-                aria-label={t('pasteFromClipboard')}
-                contentEditable
-                suppressContentEditableWarning
-                onKeyDown={(e) => {
-                  if (e.key === 'Escape') {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    setCanvasPasteMenu(null);
-                  }
-                }}
-                onInput={(e) => {
-                  // Keep box clean if OS autocomplete or keystrokes land inside
-                  e.currentTarget.textContent = '';
-                }}
-                onPaste={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  const targetPt = {
-                    x: canvasPasteMenu.worldX,
-                    y: canvasPasteMenu.worldY,
-                  };
-                  const ok = handleClipboardDataTransfer(e.clipboardData, targetPt);
-                  e.currentTarget.textContent = '';
-                  setCanvasPasteMenu(null);
-                  if (!ok) {
-                    showPasteErrorToast('empty');
-                  }
-                }}
-                className={`min-h-[38px] min-w-[210px] max-w-[280px] px-3 py-2 rounded-xl border border-dashed text-xs font-medium outline-none flex items-center cursor-text select-text ${
-                  isDarkBg
-                    ? 'border-blue-400/70 bg-blue-500/10 text-transparent caret-blue-400'
-                    : 'border-blue-500/80 bg-blue-50 text-transparent caret-blue-600'
-                }`}
-              />
-              <div
-                className={`pointer-events-none absolute inset-0 px-3 flex items-center gap-1.5 text-[11px] font-semibold ${
-                  isDarkBg ? 'text-blue-300' : 'text-blue-700'
-                }`}
-              >
-                <ClipboardPaste className="w-3.5 h-3.5 shrink-0" />
-                <span className="truncate">{t('pasteBoxHint')}</span>
-              </div>
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={() => void handlePasteFromCanvasMenu()}
-              className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap cursor-pointer active:scale-95 transition-transform"
-            >
-              <ClipboardPaste className="w-4 h-4 shrink-0" />
-              <span>{t('pasteFromClipboard')}</span>
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={() => {
-              trackFunction('close_paste_menu', 'clipboard');
-              setCanvasPasteMenu(null);
-            }}
-            aria-label={t('closeLabel')}
-            className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 cursor-pointer transition-colors ${
-              isDarkBg
-                ? 'hover:bg-neutral-800 text-neutral-400 hover:text-neutral-200'
-                : 'hover:bg-slate-100 text-slate-400 hover:text-slate-600'
-            }`}
-          >
-            <X className="w-3.5 h-3.5" />
-          </button>
-        </div>
-      )}
-
+      {/* Help & Interactive Tour Modal */}
       {helpOpen && (
         <HelpModal
-          lang={resolvedLang}
+          lang={lang}
           isDarkBg={isDarkBg}
           dontShowAgain={dontShowTutorialAgain}
-          initialFullscreenDemo={helpInitialFullscreen}
-          onToggleDontShowAgain={handleToggleDontShowTutorial}
+          onToggleDontShowAgain={(next) => {
+            setDontShowTutorialAgain(next);
+            try {
+              localStorage.setItem(HIDE_TUTORIAL_STORAGE_KEY, String(next));
+            } catch {
+              // ignore storage errors
+            }
+            if (cloudUser) {
+              void updateUserTutorialPref(cloudUser.uid, next).catch(() => {
+                // ignore network issues while toggling help checkbox
+              });
+            }
+          }}
           onClose={() => setHelpOpen(false)}
+        />
+      )}
+
+      {/* Cloud Save & Profile Modal */}
+      {cloudModalOpen && (
+        <CloudSaveModal
+          t={t}
+          user={cloudUser}
+          dontShowTutorialAgain={dontShowTutorialAgain}
+          onSyncTutorialPrefFromCloud={(hide) => {
+            if (hide) {
+              applyTutorialHidePrefLocally(true);
+            }
+          }}
+          activeProjectId={activeCloudProjectId}
+          activeProjectTitle={activeCloudProjectTitle}
+          onSaveProjectToCloud={handleSaveProjectToCloud}
+          onLoadCloudProject={handleLoadCloudProject}
+          onActiveProjectDeleted={(deletedId) => {
+            if (deletedId === activeCloudProjectId) {
+              setActiveCloudProjectId(null);
+              setActiveCloudProjectTitle('');
+            }
+          }}
+          onClose={() => setCloudModalOpen(false)}
+          isDarkBg={isDarkBg}
         />
       )}
     </div>

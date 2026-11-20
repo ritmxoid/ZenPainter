@@ -1,0 +1,248 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "User Profile",
+      "description": "Cloud profile and preferences for a registered ZenPainter user.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Firebase Authentication user UID matching the document ID."
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "User email address."
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Display name or email prefix shown in the cloud modal."
+        },
+        "hideWelcomeTutorial": {
+          "type": "boolean",
+          "description": "Whether the user chose not to auto-show the welcome tutorial modal."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the cloud profile was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the cloud profile was last updated."
+        }
+      },
+      "required": ["uid", "email", "displayName", "hideWelcomeTutorial", "createdAt", "updatedAt"]
+    },
+    "CloudProjectMeta": {
+      "title": "Cloud Project Card",
+      "description": "Lightweight project card metadata loaded when listing cloud projects.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "title": { "type": "string" },
+        "appVersion": { "type": "string" },
+        "objectCount": { "type": "number" },
+        "approxBytes": { "type": "number" },
+        "preset": {
+          "type": "string",
+          "enum": ["fullscreen", "square", "landscape", "portrait", "custom"]
+        },
+        "width": { "type": "number" },
+        "height": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "expiresAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "title",
+        "appVersion",
+        "objectCount",
+        "approxBytes",
+        "preset",
+        "width",
+        "height",
+        "createdAt",
+        "updatedAt",
+        "expiresAt"
+      ]
+    },
+    "CloudProject": {
+      "title": "Cloud Project Payload",
+      "description": "Full-fidelity ZenPainter canvas project owned by an authenticated user (max 5 slots, 30-day retention).",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Project slot document ID (${uid}_0 .. ${uid}_4)."
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "UID of the user who owns this project."
+        },
+        "title": {
+          "type": "string",
+          "description": "Human-readable project title."
+        },
+        "appVersion": {
+          "type": "string",
+          "description": "ZenPainter app version that saved the project."
+        },
+        "objectCount": {
+          "type": "number",
+          "description": "Number of Fabric objects in the project."
+        },
+        "exportScope": {
+          "type": "string",
+          "enum": ["canvas", "artwork"],
+          "description": "Selected export scope for the project."
+        },
+        "canvasSize": {
+          "type": "object",
+          "description": "Artboard dimensions and preset configuration.",
+          "properties": {
+            "preset": {
+              "type": "string",
+              "enum": ["fullscreen", "square", "landscape", "portrait", "custom"]
+            },
+            "width": { "type": "number" },
+            "height": { "type": "number" }
+          },
+          "required": ["preset", "width", "height"]
+        },
+        "bgConfig": {
+          "type": "object",
+          "description": "Background style, colors, gradient, and opacity.",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": ["white", "grid", "lined", "dark", "custom"]
+            },
+            "fillType": {
+              "type": "string",
+              "enum": ["solid", "gradient"]
+            },
+            "color1": { "type": "string" },
+            "color2": { "type": "string" },
+            "opacity": { "type": "number" },
+            "gradientType": {
+              "type": "string",
+              "enum": ["linear", "radial"]
+            },
+            "gradientAngle": { "type": "number" }
+          },
+          "required": [
+            "mode",
+            "fillType",
+            "color1",
+            "color2",
+            "opacity",
+            "gradientType",
+            "gradientAngle"
+          ]
+        },
+        "canvasData": {
+          "type": "object",
+          "description": "Native Fabric.js serialized object tree (version and objects list).",
+          "properties": {
+            "version": { "type": "string" },
+            "objects": { "type": "array" }
+          },
+          "required": ["version", "objects"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the project was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the project was last saved."
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Expiration timestamp (30 days from last save)."
+        }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "title",
+        "appVersion",
+        "objectCount",
+        "exportScope",
+        "canvasSize",
+        "bgConfig",
+        "canvasData",
+        "createdAt",
+        "updatedAt",
+        "expiresAt"
+      ]
+    },
+    "CloudDraft": {
+      "title": "Cloud Unsaved Draft",
+      "description": "Automatic per-user unsaved canvas draft stored outside the 5 saved project slots.",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string" },
+        "appVersion": { "type": "string" },
+        "objectCount": { "type": "number" },
+        "exportScope": { "type": "string", "enum": ["canvas", "artwork"] },
+        "canvasSize": { "$ref": "#/entities/CloudProject/properties/canvasSize" },
+        "bgConfig": { "$ref": "#/entities/CloudProject/properties/bgConfig" },
+        "canvasData": { "$ref": "#/entities/CloudProject/properties/canvasData" },
+        "activeProjectId": { "type": "string" },
+        "activeProjectTitle": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "expiresAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "ownerId",
+        "appVersion",
+        "objectCount",
+        "exportScope",
+        "canvasSize",
+        "bgConfig",
+        "canvasData",
+        "activeProjectId",
+        "activeProjectTitle",
+        "createdAt",
+        "updatedAt",
+        "expiresAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": {
+        "$ref": "#/entities/UserProfile"
+      },
+      "description": "Owner-only cloud profile and tutorial preference document."
+    },
+    "/projectMetas/{projectId}": {
+      "schema": {
+        "$ref": "#/entities/CloudProjectMeta"
+      },
+      "description": "Lightweight project cards (max 5 slots per user, 30-day retention)."
+    },
+    "/projects/{projectId}": {
+      "schema": {
+        "$ref": "#/entities/CloudProject"
+      },
+      "description": "Owner-only full-fidelity ZenPainter canvas payload (max 5 slots per user, 30-day retention)."
+    },
+    "/userDrafts/{userId}": {
+      "schema": {
+        "$ref": "#/entities/CloudDraft"
+      },
+      "description": "Owner-only automatic unsaved canvas draft (excluded from the 5-project limit)."
+    }
+  }
+}

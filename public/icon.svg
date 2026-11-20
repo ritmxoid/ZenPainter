@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <rect width="512" height="512" rx="112" fill="#111318" />
+  <path
+    d="M132 332C154 248 214 186 286 154C320 139 362 138 386 158C406 175 398 206 370 226C332 254 272 280 232 326C214 347 196 372 164 374C138 376 125 358 132 332Z"
+    fill="url(#strokeGrad)"
+  />
+  <path
+    d="M168 354C202 318 256 292 316 276C348 267 372 280 374 302C376 324 352 344 316 350C264 359 208 382 168 354Z"
+    fill="#F59E0B"
+    fill-opacity="0.9"
+  />
+  <defs>
+    <linearGradient id="strokeGrad" x1="132" y1="364" x2="388" y2="152" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#F43F5E" />
+      <stop offset="55%" stop-color="#FB7185" />
+      <stop offset="100%" stop-color="#FBBF24" />
+    </linearGradient>
+  </defs>
+</svg>

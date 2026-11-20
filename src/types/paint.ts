@@ -3,6 +3,7 @@ export type DrawMode =
   | 'lasso'
   | 'brush'
   | 'line'
+  | 'polyline'
   | 'bezier'
   | 'ellipse'
   | 'rect'
@@ -13,7 +14,16 @@ export type DrawMode =
 
 export type LinePattern = 'solid' | 'dashed' | 'dotted' | 'dashdot';
 
-export type BrushType = 'standard' | 'soft' | 'spray';
+export type BrushType =
+  | 'standard'
+  | 'soft'
+  | 'spray'
+  | 'stroke'
+  | 'roller'
+  | 'dry'
+  | 'watercolor'
+  | 'charcoal'
+  | 'calligraphy';
 
 export type FillMode = 'none' | 'solid' | 'pattern' | 'photo';
 

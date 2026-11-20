@@ -242,9 +242,121 @@ export function loadFillImage(
   return null;
 }
 
+export const MAX_INSERTED_IMAGE_BYTES = 30 * 1024;
+
+function encodeCanvasToTargetBytes(
+  sourceImg: CanvasImageSource,
+  naturalW: number,
+  naturalH: number,
+  preferAlpha: boolean,
+  maxDim = 960,
+  maxDataUrlBytes = MAX_INSERTED_IMAGE_BYTES
+): string {
+  const safeW = Math.max(1, naturalW);
+  const safeH = Math.max(1, naturalH);
+  const startScale = Math.min(1, maxDim / Math.max(safeW, safeH));
+  let curW = Math.max(16, Math.round(safeW * startScale));
+  let curH = Math.max(16, Math.round(safeH * startScale));
+
+  const c = document.createElement('canvas');
+  const ctx = c.getContext('2d');
+  if (!ctx) return '';
+
+  // Probe whether this browser encodes WebP (which supports transparency)
+  c.width = 2;
+  c.height = 2;
+  const supportsWebp = c.toDataURL('image/webp', 0.8).startsWith('data:image/webp');
+
+  const qualities = [0.82, 0.7, 0.58, 0.46, 0.35, 0.25];
+  let bestUrl = '';
+
+  for (let step = 0; step < 7; step++) {
+    c.width = curW;
+    c.height = curH;
+    ctx.clearRect(0, 0, curW, curH);
+
+    if (!supportsWebp && !preferAlpha) {
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(0, 0, curW, curH);
+    }
+    ctx.drawImage(sourceImg, 0, 0, curW, curH);
+
+    const mime = supportsWebp
+      ? 'image/webp'
+      : preferAlpha
+        ? 'image/png'
+        : 'image/jpeg';
+
+    if (mime === 'image/png') {
+      const url = c.toDataURL('image/png');
+      bestUrl = url;
+      if (url.length <= maxDataUrlBytes) return url;
+    } else {
+      for (const q of qualities) {
+        const url = c.toDataURL(mime, q);
+        bestUrl = url;
+        if (url.length <= maxDataUrlBytes) return url;
+      }
+    }
+
+    // Also try JPEG without alpha if transparent PNG fallback failed budget
+    if (mime === 'image/png') {
+      c.width = curW;
+      c.height = curH;
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(0, 0, curW, curH);
+      ctx.drawImage(sourceImg, 0, 0, curW, curH);
+      for (const q of qualities) {
+        const url = c.toDataURL('image/jpeg', q);
+        bestUrl = url;
+        if (url.length <= maxDataUrlBytes) return url;
+      }
+    }
+
+    if (curW <= 96 && curH <= 96) break;
+    curW = Math.max(48, Math.round(curW * 0.72));
+    curH = Math.max(48, Math.round(curH * 0.72));
+  }
+
+  return bestUrl;
+}
+
+export function compressDataUrlToMaxBytes(
+  rawUrl: string,
+  maxDim = 960,
+  maxDataUrlBytes = MAX_INSERTED_IMAGE_BYTES
+): Promise<string> {
+  if (!rawUrl || rawUrl.length <= maxDataUrlBytes) {
+    return Promise.resolve(rawUrl);
+  }
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onerror = () => resolve(rawUrl);
+    img.onload = () => {
+      const iw = img.naturalWidth || img.width || 1;
+      const ih = img.naturalHeight || img.height || 1;
+      const preferAlpha =
+        rawUrl.startsWith('data:image/png') ||
+        rawUrl.startsWith('data:image/webp') ||
+        rawUrl.startsWith('data:image/svg');
+      const compressed = encodeCanvasToTargetBytes(
+        img,
+        iw,
+        ih,
+        preferAlpha,
+        maxDim,
+        maxDataUrlBytes
+      );
+      resolve(compressed || rawUrl);
+    };
+    img.src = rawUrl;
+  });
+}
+
 export function downscaleImageFileToDataUrl(
   file: File,
-  maxDim = 1440
+  maxDim = 960,
+  maxDataUrlBytes = MAX_INSERTED_IMAGE_BYTES
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -256,32 +368,29 @@ export function downscaleImageFileToDataUrl(
         return;
       }
 
+      if (rawUrl.length <= maxDataUrlBytes && file.type !== 'image/svg+xml') {
+        resolve(rawUrl);
+        return;
+      }
+
       const img = new Image();
       img.onerror = () => resolve(rawUrl);
       img.onload = () => {
         const iw = img.naturalWidth || img.width || 1;
         const ih = img.naturalHeight || img.height || 1;
-        const scale = Math.min(1, maxDim / Math.max(iw, ih, 1));
-        if (scale >= 0.99 && file.type !== 'image/svg+xml' && rawUrl.length <= 1_800_000) {
-          resolve(rawUrl);
-          return;
-        }
-        const tw = Math.max(1, Math.round(iw * scale));
-        const th = Math.max(1, Math.round(ih * scale));
-        const c = document.createElement('canvas');
-        c.width = tw;
-        c.height = th;
-        const ctx = c.getContext('2d');
-        if (!ctx) {
-          resolve(rawUrl);
-          return;
-        }
-        ctx.drawImage(img, 0, 0, tw, th);
-        const keepAlpha =
+        const preferAlpha =
           file.type === 'image/png' ||
           file.type === 'image/webp' ||
           file.type === 'image/svg+xml';
-        resolve(keepAlpha ? c.toDataURL('image/png') : c.toDataURL('image/jpeg', 0.9));
+        const compressed = encodeCanvasToTargetBytes(
+          img,
+          iw,
+          ih,
+          preferAlpha,
+          maxDim,
+          maxDataUrlBytes
+        );
+        resolve(compressed || rawUrl);
       };
       img.src = rawUrl;
     };
@@ -1132,7 +1241,103 @@ export function applyCornerRoundingToObject(obj: any, ratio: number): boolean {
     return true;
   }
 
+  if (obj.type === 'triangle') {
+    obj.set({
+      cornerRoundRatio: clamped,
+      dirty: true,
+    });
+    return true;
+  }
+
   return false;
+}
+
+export function getObjectCornerWorldVertices(
+  obj: any
+): Array<{ x: number; y: number }> {
+  const fabric = getFabric();
+  if (!fabric || !obj || !isObjectCornerRoundable(obj)) return [];
+
+  const mat = obj.calcTransformMatrix();
+  const toWorld = (lx: number, ly: number) => {
+    const p = fabric.util.transformPoint(new fabric.Point(lx, ly), mat);
+    return { x: p.x, y: p.y };
+  };
+
+  if (obj.type === 'rect') {
+    const w2 = (obj.width || 0) / 2;
+    const h2 = (obj.height || 0) / 2;
+    if (w2 < 1 || h2 < 1) return [];
+    return [
+      toWorld(-w2, -h2),
+      toWorld(w2, -h2),
+      toWorld(w2, h2),
+      toWorld(-w2, h2),
+    ];
+  }
+
+  if (obj.type === 'triangle') {
+    const w2 = (obj.width || 0) / 2;
+    const h2 = (obj.height || 0) / 2;
+    if (w2 < 1 || h2 < 1) return [];
+    return [
+      toWorld(0, -h2),
+      toWorld(w2, h2),
+      toWorld(-w2, h2),
+    ];
+  }
+
+  if (obj.type === 'polygon') {
+    const rawPts =
+      Array.isArray(obj.baseLocalPoints) && obj.baseLocalPoints.length >= 3
+        ? obj.baseLocalPoints
+        : obj.points;
+    if (!Array.isArray(rawPts) || rawPts.length < 3) return [];
+    const ox = obj.basePathOffset?.x ?? obj.pathOffset?.x ?? 0;
+    const oy = obj.basePathOffset?.y ?? obj.pathOffset?.y ?? 0;
+    return rawPts.map((pt: any) => toWorld((pt.x || 0) - ox, (pt.y || 0) - oy));
+  }
+
+  if (obj.type === 'path') {
+    const cmds =
+      Array.isArray(obj.basePathCommands) && obj.basePathCommands.length >= 2
+        ? obj.basePathCommands
+        : obj.path;
+    if (!Array.isArray(cmds) || cmds.length < 2) return [];
+    const ox = obj.basePathOffset?.x ?? obj.pathOffset?.x ?? 0;
+    const oy = obj.basePathOffset?.y ?? obj.pathOffset?.y ?? 0;
+    const vertices: Array<{ x: number; y: number }> = [];
+    const pushUnique = (lx: number, ly: number) => {
+      const wpt = toWorld(lx - ox, ly - oy);
+      const last = vertices[vertices.length - 1];
+      if (last && Math.hypot(wpt.x - last.x, wpt.y - last.y) < 2) return;
+      vertices.push(wpt);
+    };
+    for (let i = 0; i < cmds.length; i++) {
+      const c = cmds[i];
+      if (!c) continue;
+      const op = c[0];
+      if (op === 'M' || op === 'L' || op === 'T') {
+        pushUnique(Number(c[1]), Number(c[2]));
+      } else if (op === 'Q' || op === 'S') {
+        pushUnique(Number(c[3]), Number(c[4]));
+      } else if (op === 'C') {
+        pushUnique(Number(c[5]), Number(c[6]));
+      } else if (op === 'A') {
+        pushUnique(Number(c[6]), Number(c[7]));
+      }
+    }
+    if (vertices.length >= 2) {
+      const first = vertices[0];
+      const last = vertices[vertices.length - 1];
+      if (Math.hypot(first.x - last.x, first.y - last.y) < 3) {
+        vertices.pop();
+      }
+    }
+    return vertices;
+  }
+
+  return [];
 }
 
 export function buildBlockArrowPoints(
@@ -1430,6 +1635,27 @@ function buildObjectPath2D(obj: any): Path2D | null {
       const w2 = (obj.width || 0) / 2;
       const h2 = (obj.height || 0) / 2;
       if (w2 <= 0 && h2 <= 0) return null;
+      const ratio = typeof obj.cornerRoundRatio === 'number' ? obj.cornerRoundRatio : 0;
+      if (ratio > 0.005) {
+        const pts = computeRoundedPolygonPoints(
+          [
+            { x: 0, y: -h2 },
+            { x: w2, y: h2 },
+            { x: -w2, y: h2 },
+          ],
+          ratio,
+          obj.scaleX || 1,
+          obj.scaleY || 1
+        );
+        if (pts.length >= 3) {
+          p.moveTo(pts[0].x, pts[0].y);
+          for (let i = 1; i < pts.length; i++) {
+            p.lineTo(pts[i].x, pts[i].y);
+          }
+          p.closePath();
+          return p;
+        }
+      }
       p.moveTo(-w2, h2);
       p.lineTo(0, -h2);
       p.lineTo(w2, h2);
@@ -1718,6 +1944,47 @@ export function installDoubleLineStrokeHook(): void {
       }
       ctx.stroke();
       ctx.restore();
+    };
+  }
+
+  if (fabric.Triangle && fabric.Triangle.prototype) {
+    if (Array.isArray(fabric.Triangle.prototype.cacheProperties)) {
+      if (!fabric.Triangle.prototype.cacheProperties.includes('cornerRoundRatio')) {
+        fabric.Triangle.prototype.cacheProperties.push('cornerRoundRatio');
+      }
+    }
+    const origTriRender = fabric.Triangle.prototype._render;
+    fabric.Triangle.prototype._render = function (ctx: CanvasRenderingContext2D) {
+      const ratio = typeof this.cornerRoundRatio === 'number' ? this.cornerRoundRatio : 0;
+      if (ratio <= 0.005) {
+        return origTriRender.call(this, ctx);
+      }
+      const w2 = (this.width || 0) / 2;
+      const h2 = (this.height || 0) / 2;
+      if (w2 <= 0.5 || h2 <= 0.5) {
+        return origTriRender.call(this, ctx);
+      }
+      const pts = computeRoundedPolygonPoints(
+        [
+          { x: 0, y: -h2 },
+          { x: w2, y: h2 },
+          { x: -w2, y: h2 },
+        ],
+        ratio,
+        this.scaleX || 1,
+        this.scaleY || 1
+      );
+      if (pts.length < 3) {
+        return origTriRender.call(this, ctx);
+      }
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) {
+        ctx.lineTo(pts[i].x, pts[i].y);
+      }
+      ctx.closePath();
+      this._renderFill(ctx);
+      this._renderStroke(ctx);
     };
   }
 }
