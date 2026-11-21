@@ -242,7 +242,7 @@ export function loadFillImage(
   return null;
 }
 
-export const MAX_INSERTED_IMAGE_BYTES = 30 * 1024;
+export const MAX_INSERTED_IMAGE_BYTES = 100 * 1024;
 
 function encodeCanvasToTargetBytes(
   sourceImg: CanvasImageSource,
@@ -319,6 +319,37 @@ function encodeCanvasToTargetBytes(
   }
 
   return bestUrl;
+}
+
+export function encodeTransparentCanvasCompact(
+  srcCanvas: HTMLCanvasElement,
+  maxDataUrlBytes = MAX_INSERTED_IMAGE_BYTES
+): string {
+  const probe = document.createElement('canvas');
+  probe.width = 2;
+  probe.height = 2;
+  const supportsWebp = probe.toDataURL('image/webp', 0.85).startsWith('data:image/webp');
+
+  if (supportsWebp) {
+    const webpQualities = [0.86, 0.74, 0.62, 0.48, 0.36];
+    for (const q of webpQualities) {
+      const url = srcCanvas.toDataURL('image/webp', q);
+      if (url.length <= maxDataUrlBytes) return url;
+    }
+  } else {
+    const pngUrl = srcCanvas.toDataURL('image/png');
+    if (pngUrl.length <= maxDataUrlBytes) return pngUrl;
+  }
+
+  const fallback = encodeCanvasToTargetBytes(
+    srcCanvas,
+    srcCanvas.width,
+    srcCanvas.height,
+    true,
+    Math.max(srcCanvas.width, srcCanvas.height),
+    maxDataUrlBytes
+  );
+  return fallback || srcCanvas.toDataURL(supportsWebp ? 'image/webp' : 'image/png');
 }
 
 export function compressDataUrlToMaxBytes(

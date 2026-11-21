@@ -1,4 +1,4 @@
-import { getFabric } from './canvasHelpers';
+import { encodeTransparentCanvasCompact, getFabric } from './canvasHelpers';
 
 export interface LassoPoint {
   x: number;
@@ -107,7 +107,7 @@ function cropCanvasToDataUrl(
       bounds.height
     );
   }
-  return out.toDataURL('image/png');
+  return encodeTransparentCanvasCompact(out);
 }
 
 function tracePolygonInLocal(
@@ -209,6 +209,8 @@ export async function extractLassoFragment(
   let fragDataUrl = '';
   let fragWorldLeft = polyMinX;
   let fragWorldTop = polyMinY;
+  let fragTightWidth = 0;
+  let fragTightHeight = 0;
 
   interface CutReplacement {
     oldObj: any;
@@ -218,6 +220,8 @@ export async function extractLassoFragment(
     worldLeft?: number;
     worldTop?: number;
     scale?: number;
+    srcWidth?: number;
+    srcHeight?: number;
   }
   const replacements: CutReplacement[] = [];
 
@@ -251,6 +255,8 @@ export async function extractLassoFragment(
     fragDataUrl = cropCanvasToDataUrl(clippedFragCanvas, fragTight);
     fragWorldLeft = polyMinX + fragTight.minX / fragMult;
     fragWorldTop = polyMinY + fragTight.minY / fragMult;
+    fragTightWidth = fragTight.width;
+    fragTightHeight = fragTight.height;
 
     // 2) Punch out the lasso area cleanly from each touched object
     for (const cand of candidates) {
@@ -314,6 +320,8 @@ export async function extractLassoFragment(
           worldLeft: cand.bounds.left + remainingBounds.minX / objMult,
           worldTop: cand.bounds.top + remainingBounds.minY / objMult,
           scale: 1 / objMult,
+          srcWidth: remainingBounds.width,
+          srcHeight: remainingBounds.height,
         });
       }
     }
@@ -347,13 +355,16 @@ export async function extractLassoFragment(
     if (curIdx < 0) continue;
     fc.remove(rep.oldObj);
     if (!rep.removeOnly && img) {
+      const baseScale = rep.scale ?? 1;
+      const rScaleX = rep.srcWidth && img.width ? baseScale * (rep.srcWidth / img.width) : baseScale;
+      const rScaleY = rep.srcHeight && img.height ? baseScale * (rep.srcHeight / img.height) : baseScale;
       img.set({
         left: rep.worldLeft,
         top: rep.worldTop,
         originX: 'left',
         originY: 'top',
-        scaleX: rep.scale,
-        scaleY: rep.scale,
+        scaleX: rScaleX,
+        scaleY: rScaleY,
         opacity: 1,
         strokeUniform: true,
         strokeWidth: 0,
@@ -370,13 +381,15 @@ export async function extractLassoFragment(
     }
   }
 
+  const fragScaleX = fragImg.width ? (1 / fragMult) * (fragTightWidth / fragImg.width) : 1 / fragMult;
+  const fragScaleY = fragImg.height ? (1 / fragMult) * (fragTightHeight / fragImg.height) : 1 / fragMult;
   fragImg.set({
     left: fragWorldLeft,
     top: fragWorldTop,
     originX: 'left',
     originY: 'top',
-    scaleX: 1 / fragMult,
-    scaleY: 1 / fragMult,
+    scaleX: fragScaleX,
+    scaleY: fragScaleY,
     opacity: 1,
     strokeUniform: true,
     strokeWidth: 0,

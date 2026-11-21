@@ -28,6 +28,7 @@ import {
   type CloudProjectRecord,
   ensureUserProfile,
   loadCloudDraft,
+  prepareCanvasDataForCloud,
   saveCloudDraft,
   saveCloudProject,
   updateUserTutorialPref,
@@ -607,11 +608,12 @@ export default function App() {
 
     try {
       const serialized = fc.toObject(CUSTOM_FABRIC_PROPS) as Record<string, unknown>;
+      const compactSerialized = prepareCanvasDataForCloud(serialized);
       const draftPayload = {
         exportScope: exportScopeRef.current,
         canvasSize: canvasSizeRef.current,
         bgConfig: bgConfigRef.current,
-        canvasData: serialized,
+        canvasData: compactSerialized,
         activeProjectId: activeCloudProjectIdRef.current || '',
         activeProjectTitle: activeCloudProjectTitleRef.current || '',
         updatedAtMs: Date.now(),
@@ -875,7 +877,15 @@ export default function App() {
               cornerColor: '#2563EB',
               borderColor: '#2563EB',
             });
-            refreshObjectPhotoFill(obj, fc);
+            const rehydratePhoto = (item: any) => {
+              if (!item) return;
+              if (item.fillMeta?.mode === 'photo' && item.fillMeta.photoDataUrl) {
+                refreshObjectPhotoFill(item, fc);
+              } else if (Array.isArray(item._objects)) {
+                item._objects.forEach((child: any) => rehydratePhoto(child));
+              }
+            };
+            rehydratePhoto(obj);
             rehydrateArtisticBrushObject(obj);
           }
         });
@@ -2472,11 +2482,13 @@ export default function App() {
         cropped.dataUrl,
         (img: any) => {
           if (!img) return;
+          const ratioX = img.width ? cropped.width / img.width : 1;
+          const ratioY = img.height ? cropped.height / img.height : 1;
           img.set({
             left: worldLeft,
             top: worldTop,
-            scaleX,
-            scaleY,
+            scaleX: scaleX * ratioX,
+            scaleY: scaleY * ratioY,
             originX: 'left',
             originY: 'top',
             isTexturedBrushStroke: true,
@@ -4209,7 +4221,15 @@ export default function App() {
                     cornerColor: '#2563EB',
                     borderColor: '#2563EB',
                   });
-                  refreshObjectPhotoFill(obj, fc);
+                  const rehydratePhoto = (item: any) => {
+                    if (!item) return;
+                    if (item.fillMeta?.mode === 'photo' && item.fillMeta.photoDataUrl) {
+                      refreshObjectPhotoFill(item, fc);
+                    } else if (Array.isArray(item._objects)) {
+                      item._objects.forEach((child: any) => rehydratePhoto(child));
+                    }
+                  };
+                  rehydratePhoto(obj);
                   rehydrateArtisticBrushObject(obj);
                 }
               });
@@ -4311,7 +4331,15 @@ export default function App() {
               cornerColor: '#2563EB',
               borderColor: '#2563EB',
             });
-            refreshObjectPhotoFill(obj, fc);
+            const rehydratePhoto = (item: any) => {
+              if (!item) return;
+              if (item.fillMeta?.mode === 'photo' && item.fillMeta.photoDataUrl) {
+                refreshObjectPhotoFill(item, fc);
+              } else if (Array.isArray(item._objects)) {
+                item._objects.forEach((child: any) => rehydratePhoto(child));
+              }
+            };
+            rehydratePhoto(obj);
             rehydrateArtisticBrushObject(obj);
           }
         });

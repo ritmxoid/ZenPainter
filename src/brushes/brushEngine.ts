@@ -1,3 +1,5 @@
+import { encodeTransparentCanvasCompact } from '../utils/canvasHelpers';
+
 export type BrushPresetId =
   | 'stroke'
   | 'roller'
@@ -756,7 +758,7 @@ export function cropOpaqueCanvasBounds(
   octx.drawImage(src, minX, minY, cropW, cropH, 0, 0, cropW, cropH);
 
   return {
-    dataUrl: out.toDataURL('image/png'),
+    dataUrl: encodeTransparentCanvasCompact(out),
     minX,
     minY,
     width: cropW,

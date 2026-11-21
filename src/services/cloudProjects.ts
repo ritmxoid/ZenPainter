@@ -169,6 +169,53 @@ export function restoreValueFromFirestore(value: unknown): unknown {
   return value;
 }
 
+function stripTransientPatternFromObject(
+  rawObj: unknown,
+  parentIsPhotoFilled = false
+): Record<string, unknown> | null {
+  if (!rawObj || typeof rawObj !== 'object' || Array.isArray(rawObj)) {
+    return null;
+  }
+  const obj = rawObj as Record<string, unknown>;
+  const fillMeta = obj.fillMeta as Record<string, unknown> | undefined;
+  const hasPhotoFillMeta = Boolean(
+    fillMeta && fillMeta.mode === 'photo' && typeof fillMeta.photoDataUrl === 'string' && fillMeta.photoDataUrl
+  );
+  const stripPatternHere = hasPhotoFillMeta || parentIsPhotoFilled;
+
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (k === 'fill' && stripPatternHere && v && typeof v === 'object') {
+      out.fill = 'transparent';
+    } else if (k === 'objects' && Array.isArray(v)) {
+      out.objects = v
+        .map((child) => stripTransientPatternFromObject(child, stripPatternHere))
+        .filter((child): child is Record<string, unknown> => Boolean(child));
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+export function prepareCanvasDataForCloud(
+  rawCanvasData: Record<string, unknown> | undefined | null
+): SerializedCanvasData {
+  const rawObjects = Array.isArray(rawCanvasData?.objects)
+    ? (rawCanvasData.objects as unknown[])
+    : [];
+  const compactObjects = rawObjects
+    .slice(0, 3000)
+    .map((obj) => stripTransientPatternFromObject(obj, false))
+    .map((obj) => sanitizeValueForFirestore(obj, false))
+    .filter((obj): obj is Record<string, unknown> => Boolean(obj && typeof obj === 'object'));
+
+  return {
+    version: String(rawCanvasData?.version || '5.3.0').slice(0, 40),
+    objects: compactObjects,
+  };
+}
+
 function timestampToMs(val: unknown, fallbackMs = Date.now()): number {
   if (!val) return fallbackMs;
   if (typeof val === 'object' && val !== null && 'toMillis' in val) {
@@ -516,18 +563,8 @@ export async function saveCloudProject(
   input: SaveCloudProjectInput
 ): Promise<string> {
   const title = (input.title || 'ZenPainter').trim().slice(0, 120) || 'ZenPainter';
-  const rawObjects = Array.isArray(input.canvasData?.objects)
-    ? (input.canvasData.objects as unknown[])
-    : [];
-  const sanitizedObjects = rawObjects
-    .slice(0, 3000)
-    .map((obj) => sanitizeValueForFirestore(obj, false))
-    .filter((obj): obj is Record<string, unknown> => Boolean(obj && typeof obj === 'object'));
-
-  const sanitizedCanvasData: SerializedCanvasData = {
-    version: String(input.canvasData?.version || '5.3.0').slice(0, 40),
-    objects: sanitizedObjects,
-  };
+  const sanitizedCanvasData = prepareCanvasDataForCloud(input.canvasData);
+  const sanitizedObjects = sanitizedCanvasData.objects;
 
   const validatedSize = buildValidatedCanvasSize(input.canvasSize);
   const validatedBg = buildValidatedBgConfig(input.bgConfig);
@@ -689,18 +726,8 @@ export async function saveCloudDraft(
   const next = previous
     .catch(() => false)
     .then(async (): Promise<boolean> => {
-      const rawObjects = Array.isArray(input.canvasData?.objects)
-        ? (input.canvasData.objects as unknown[])
-        : [];
-      const sanitizedObjects = rawObjects
-        .slice(0, 3000)
-        .map((obj) => sanitizeValueForFirestore(obj, false))
-        .filter((obj): obj is Record<string, unknown> => Boolean(obj && typeof obj === 'object'));
-
-      const sanitizedCanvasData: SerializedCanvasData = {
-        version: String(input.canvasData?.version || '5.3.0').slice(0, 40),
-        objects: sanitizedObjects,
-      };
+      const sanitizedCanvasData = prepareCanvasDataForCloud(input.canvasData);
+      const sanitizedObjects = sanitizedCanvasData.objects;
 
       const validatedSize = buildValidatedCanvasSize(input.canvasSize);
       const validatedBg = buildValidatedBgConfig(input.bgConfig);
