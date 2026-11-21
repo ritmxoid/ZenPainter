@@ -1,14 +1,20 @@
-import {Download, Share, X} from 'lucide-react';
-import {useState} from 'react';
-import {usePWAInstall} from '../hooks/usePWAInstall';
+import { Download, Share, X } from 'lucide-react';
+import { useState } from 'react';
+import { usePWAInstall } from '../hooks/usePWAInstall';
+import { TranslationKey } from '../i18n/translations';
 
 interface PWAInstallButtonProps {
+  t: (key: TranslationKey) => string;
   isDarkBg?: boolean;
   fullWidth?: boolean;
 }
 
-export function PWAInstallButton({isDarkBg = false, fullWidth = false}: PWAInstallButtonProps) {
-  const {isInstallable, isInstalled, isIOS, install} = usePWAInstall();
+export function PWAInstallButton({
+  t,
+  isDarkBg = false,
+  fullWidth = false,
+}: PWAInstallButtonProps) {
+  const { isInstallable, isInstalled, isIOS, install } = usePWAInstall();
   const [showIOSGuide, setShowIOSGuide] = useState(false);
 
   if (isInstalled) {
@@ -27,7 +33,7 @@ export function PWAInstallButton({isDarkBg = false, fullWidth = false}: PWAInsta
         }`}
       >
         <Download className="w-4 h-4 shrink-0" />
-        <span>Установить как приложение</span>
+        <span>{t('pwaInstallBtn')}</span>
       </button>
     );
   }
@@ -45,7 +51,7 @@ export function PWAInstallButton({isDarkBg = false, fullWidth = false}: PWAInsta
           }`}
         >
           <Download className="w-4 h-4 shrink-0" />
-          <span>На экран «Домой»</span>
+          <span>{t('pwaIosBtn')}</span>
         </button>
 
         {showIOSGuide && (
@@ -58,11 +64,11 @@ export function PWAInstallButton({isDarkBg = false, fullWidth = false}: PWAInsta
               onClick={(e) => e.stopPropagation()}
             >
               <div className="flex items-center justify-between gap-4">
-                <h2 className="text-base font-semibold">Установка на iPhone и iPad</h2>
+                <h2 className="text-base font-semibold">{t('pwaIosTitle')}</h2>
                 <button
                   type="button"
                   onClick={() => setShowIOSGuide(false)}
-                  aria-label="Закрыть"
+                  aria-label={t('closeLabel')}
                   className="flex min-h-[40px] min-w-[40px] items-center justify-center rounded-lg text-zinc-400 hover:bg-white/10 hover:text-white"
                 >
                   <X className="h-4 w-4" />
@@ -72,25 +78,23 @@ export function PWAInstallButton({isDarkBg = false, fullWidth = false}: PWAInsta
                 <li className="flex items-start gap-2.5">
                   <span className="font-semibold text-blue-400">1.</span>
                   <span>
-                    Нажмите кнопку{' '}
+                    {t('pwaIosStep1Pre')}{' '}
                     <span className="inline-flex items-center gap-1 font-medium text-white">
-                      Поделиться <Share className="h-3.5 w-3.5" />
+                      {t('pwaIosStep1Share')} <Share className="h-3.5 w-3.5" />
                     </span>{' '}
-                    в панели Safari.
+                    {t('pwaIosStep1Post')}
                   </span>
                 </li>
                 <li className="flex items-start gap-2.5">
                   <span className="font-semibold text-blue-400">2.</span>
                   <span>
-                    Прокрутите меню и выберите{' '}
-                    <strong className="font-medium text-white">На экран «Домой»</strong>.
+                    {t('pwaIosStep2Pre')}{' '}
+                    <strong className="font-medium text-white">{t('pwaIosStep2Home')}</strong>.
                   </span>
                 </li>
                 <li className="flex items-start gap-2.5">
                   <span className="font-semibold text-blue-400">3.</span>
-                  <span>
-                    Запустите приложение с главного экрана — оно откроется на весь экран без рамок браузера.
-                  </span>
+                  <span>{t('pwaIosStep3')}</span>
                 </li>
               </ol>
             </div>

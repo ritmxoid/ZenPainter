@@ -982,15 +982,8 @@ export const ShapesPopover: React.FC<ShapesPopoverProps> = ({
               <div className={`text-[11px] font-medium mb-1.5 ${mutedText}`}>
                 {t('brushTypeLabel')}
               </div>
-              <div
-                className={`grid gap-1 p-1 rounded-xl ${subSurface} ${
-                  isEditingSelection ? 'grid-cols-2' : 'grid-cols-3'
-                }`}
-              >
-                {(isEditingSelection
-                  ? brushTypes.filter((b) => isVectorBrush(b.id))
-                  : brushTypes
-                ).map((bt) => {
+              <div className={`grid grid-cols-3 gap-1 p-1 rounded-xl ${subSurface}`}>
+                {brushTypes.map((bt) => {
                   const active = displayStroke.brushType === bt.id;
                   return (
                     <button

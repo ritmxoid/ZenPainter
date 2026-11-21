@@ -825,7 +825,7 @@ export const ActionsPopover: React.FC<ActionsPopoverProps> = ({
                     true
                   );
                 }}
-                title={`${t('swapDimensions')} (W ↔ H)`}
+                title={t('swapDimensions')}
                 aria-label={t('swapDimensions')}
                 className={`min-h-[36px] w-9 shrink-0 rounded-lg border flex items-center justify-center transition-colors cursor-pointer ${
                   isDarkBg
@@ -939,7 +939,7 @@ export const ActionsPopover: React.FC<ActionsPopoverProps> = ({
         <hr className={divider} />
 
         {/* PWA Fullscreen Install Trigger (auto-hides when installed) */}
-        <PWAInstallButton isDarkBg={isDarkBg} fullWidth />
+        <PWAInstallButton t={t} isDarkBg={isDarkBg} fullWidth />
 
         {/* Help & Interactive Tour */}
         <button

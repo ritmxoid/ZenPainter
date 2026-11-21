@@ -69,22 +69,22 @@ function mapFirebaseAuthError(err: unknown, t: (key: TranslationKey) => string):
     case 'auth/operation-not-allowed':
       return t('cloudErrOperationNotAllowed');
     case 'auth/email-already-in-use':
-      return 'Этот email уже зарегистрирован — переключитесь на «Войти».';
+      return t('cloudErrEmailInUse');
     case 'auth/invalid-email':
-      return 'Проверьте правильность email-адреса.';
+      return t('cloudErrInvalidEmail');
     case 'auth/weak-password':
-      return 'Пароль должен содержать минимум 6 символов.';
+      return t('cloudErrWeakPassword');
     case 'auth/invalid-credential':
     case 'auth/wrong-password':
     case 'auth/user-not-found':
-      return 'Неверный email или пароль.';
+      return t('cloudErrInvalidCredential');
     case 'auth/too-many-requests':
-      return 'Слишком много попыток. Подождите немного и попробуйте снова.';
+      return t('cloudErrTooManyRequests');
     case 'auth/popup-closed-by-user':
     case 'auth/cancelled-popup-request':
-      return 'Окно входа Google было закрыто до завершения.';
+      return t('cloudErrPopupClosed');
     case 'auth/network-request-failed':
-      return 'Нет подключения к сети. Проверьте интернет.';
+      return t('cloudErrNetwork');
     default:
       return err instanceof Error && err.message
         ? err.message
@@ -196,7 +196,7 @@ export const CloudSaveModal: React.FC<CloudSaveModalProps> = ({
     e.preventDefault();
     const trimmedEmail = email.trim();
     if (!trimmedEmail || password.length < 6) {
-      setAuthError('Введите корректный email и пароль (минимум 6 символов).');
+      setAuthError(t('cloudErrValidation'));
       return;
     }
 
@@ -374,8 +374,8 @@ export const CloudSaveModal: React.FC<CloudSaveModalProps> = ({
                 {t('cloudAuthPrompt')}
               </div>
 
-              <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-300 text-[11px] flex items-start gap-2 leading-snug">
-                <Clock className="w-4 h-4 shrink-0 mt-0.5" />
+              <div className="p-3 rounded-xl bg-orange-600 border border-orange-500 text-white text-[11px] font-medium flex items-start gap-2 leading-snug shadow-sm">
+                <Clock className="w-4 h-4 shrink-0 mt-0.5 text-white" />
                 <span>{t('cloudQuotaNotice')}</span>
               </div>
 
@@ -409,7 +409,13 @@ export const CloudSaveModal: React.FC<CloudSaveModalProps> = ({
                 </div>
 
                 {authError && (
-                  <div className="p-2.5 rounded-xl bg-red-500/10 border border-red-500/30 text-red-600 dark:text-red-400 text-[11px] flex items-start gap-2 leading-snug">
+                  <div
+                    className={`p-2.5 rounded-xl border text-[11px] flex items-start gap-2 leading-snug ${
+                      isDarkBg
+                        ? 'bg-red-500/15 border-red-500/40 text-red-300'
+                        : 'bg-red-50 border-red-200 text-red-700'
+                    }`}
+                  >
                     <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
                     <span>{authError}</span>
                   </div>
@@ -490,13 +496,13 @@ export const CloudSaveModal: React.FC<CloudSaveModalProps> = ({
           ) : (
             <>
               {/* Retention & Slot Limit Banner */}
-              <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-300 text-[11px] space-y-1.5 leading-snug">
+              <div className="p-3 rounded-xl bg-orange-600 border border-orange-500 text-white text-[11px] font-medium space-y-1.5 leading-snug shadow-sm">
                 <div className="flex items-start gap-2">
-                  <Clock className="w-4 h-4 shrink-0 mt-0.5" />
+                  <Clock className="w-4 h-4 shrink-0 mt-0.5 text-white" />
                   <span>{t('cloudQuotaNotice')}</span>
                 </div>
-                <div className="opacity-90 pl-6">{t('cloudAutoSaveNotice')}</div>
-                <div className="flex items-center justify-between pt-0.5 font-semibold">
+                <div className="text-white/95 pl-6">{t('cloudAutoSaveNotice')}</div>
+                <div className="flex items-center justify-between pt-0.5 font-semibold text-white">
                   <span>{t('cloudQuotaCounter')}:</span>
                   <span className="tabular-nums">
                     {projects.length} / {MAX_CLOUD_PROJECTS_PER_USER}
@@ -520,14 +526,26 @@ export const CloudSaveModal: React.FC<CloudSaveModalProps> = ({
                 </label>
 
                 {statusError && (
-                  <div className="p-2.5 rounded-xl bg-red-500/10 border border-red-500/30 text-red-600 dark:text-red-400 text-[11px] flex items-start gap-2">
+                  <div
+                    className={`p-2.5 rounded-xl border text-[11px] flex items-start gap-2 ${
+                      isDarkBg
+                        ? 'bg-red-500/15 border-red-500/40 text-red-300'
+                        : 'bg-red-50 border-red-200 text-red-700'
+                    }`}
+                  >
                     <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
                     <span>{statusError}</span>
                   </div>
                 )}
 
                 {statusSuccess && (
-                  <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 text-[11px] flex items-center gap-2">
+                  <div
+                    className={`p-2.5 rounded-xl border text-[11px] flex items-center gap-2 ${
+                      isDarkBg
+                        ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
+                        : 'bg-emerald-50 border-emerald-200 text-emerald-700'
+                    }`}
+                  >
                     <Check className="w-4 h-4 shrink-0" />
                     <span>{statusSuccess}</span>
                   </div>

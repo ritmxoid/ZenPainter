@@ -2,21 +2,33 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   ArrowDown,
   ArrowUp,
+  Brush,
+  ChevronDown,
+  ChevronUp,
   Copy,
+  Droplets,
+  Feather,
+  Flame,
   FlipHorizontal2,
   FlipVertical2,
   Grid3X3,
   Image as ImageIcon,
   Minus,
+  PaintRoller,
   Pencil,
   Plus,
+  SlidersHorizontal,
+  Sparkles,
   Square,
   Trash2,
+  Waves,
   X,
 } from 'lucide-react';
+import { isArtisticContourBrush } from '../brushes/contourBrushRenderer';
 import { CYRILLIC_LATIN_FONTS, QUICK_COLOR_SWATCHES } from '../constants/fonts';
 import { TranslationKey } from '../i18n/translations';
 import {
+  BrushType,
   FillMode,
   FillSettings,
   HatchPattern,
@@ -36,6 +48,7 @@ interface ObjectEditorPopoverProps {
     width?: number;
     pattern?: LinePattern;
     doubleLine?: boolean;
+    brushType?: BrushType;
   }) => void;
   onUpdateFill: (next: FillSettings) => void;
   onUpdateGrid?: (next: RectGridConfig) => void;
@@ -48,6 +61,8 @@ interface ObjectEditorPopoverProps {
   }) => void;
   onEnterTextEdit: () => void;
   onFlip: (axis: 'x' | 'y') => void;
+  onBringForward: () => void;
+  onSendBackwards: () => void;
   onBringToFront: () => void;
   onSendToBack: () => void;
   onDuplicate: () => void;
@@ -68,6 +83,8 @@ export const ObjectEditorPopover: React.FC<ObjectEditorPopoverProps> = ({
   onUpdateText,
   onEnterTextEdit,
   onFlip,
+  onBringForward,
+  onSendBackwards,
   onBringToFront,
   onSendToBack,
   onDuplicate,
@@ -76,6 +93,7 @@ export const ObjectEditorPopover: React.FC<ObjectEditorPopoverProps> = ({
   onClose,
   isDarkBg,
 }) => {
+  const [isExpanded, setIsExpanded] = useState(false);
   const patternLongPressTimerRef = useRef<number | null>(null);
   const patternLongPressTriggeredRef = useRef(false);
   const patternPressStartRef = useRef<{ x: number; y: number } | null>(null);
@@ -133,6 +151,44 @@ export const ObjectEditorPopover: React.FC<ObjectEditorPopoverProps> = ({
     { id: 'horizontal', labelKey: 'hatchHorizontal' },
   ];
 
+  const brushTypes: Array<{
+    id: BrushType;
+    labelKey: TranslationKey;
+    icon: React.ReactNode;
+  }> = [
+    { id: 'standard', labelKey: 'brushStandard', icon: <Pencil className="w-3.5 h-3.5" /> },
+    { id: 'soft', labelKey: 'brushSoft', icon: <Droplets className="w-3.5 h-3.5" /> },
+    { id: 'spray', labelKey: 'brushSpray', icon: <Sparkles className="w-3.5 h-3.5" /> },
+    { id: 'stroke', labelKey: 'brushStroke', icon: <Brush className="w-3.5 h-3.5" /> },
+    { id: 'roller', labelKey: 'brushRoller', icon: <PaintRoller className="w-3.5 h-3.5" /> },
+    { id: 'dry', labelKey: 'brushDry', icon: <Waves className="w-3.5 h-3.5" /> },
+    { id: 'watercolor', labelKey: 'brushWatercolor', icon: <Droplets className="w-3.5 h-3.5" /> },
+    { id: 'charcoal', labelKey: 'brushCharcoal', icon: <Flame className="w-3.5 h-3.5" /> },
+    { id: 'calligraphy', labelKey: 'brushCalligraphy', icon: <Feather className="w-3.5 h-3.5" /> },
+  ];
+
+  const currentBrushType: BrushType = info.brushType || 'standard';
+
+  const handleSelectBrushType = (bt: BrushType) => {
+    const needsVisibleWidth =
+      bt !== 'standard' &&
+      info.strokeWidth === 0 &&
+      (info.kind === 'text' || info.kind === 'image' || info.kind === 'closedShape');
+    const autoWidth =
+      info.kind === 'text'
+        ? Math.max(3, Math.round(info.fontSize * 0.1))
+        : Math.max(4, info.strokeWidth || 6);
+    onUpdateStroke({
+      brushType: bt,
+      ...(needsVisibleWidth
+        ? {
+            width: autoWidth,
+            color: info.strokeColor || info.textColor || '#0F172A',
+          }
+        : {}),
+    });
+  };
+
   const surface = isDarkBg
     ? 'bg-neutral-900/95 text-neutral-100 border-neutral-700/80 shadow-2xl shadow-black/50'
     : 'bg-white/95 text-slate-900 border-slate-200/90 shadow-xl shadow-slate-900/10';
@@ -147,6 +203,111 @@ export const ObjectEditorPopover: React.FC<ObjectEditorPopoverProps> = ({
         ? t('textEditTitle')
         : t('shapeTitle');
 
+  const compactBtn = isDarkBg
+    ? 'hover:bg-neutral-800 text-neutral-200'
+    : 'hover:bg-slate-100 text-slate-700';
+
+  if (!isExpanded) {
+    return (
+      <div
+        onPointerDown={(e) => e.stopPropagation()}
+        onTouchStart={(e) => e.stopPropagation()}
+        className={`fixed bottom-4 left-1/2 -translate-x-1/2 z-40 rounded-2xl border backdrop-blur-md p-1.5 flex items-center gap-1 transition-all duration-150 ${surface}`}
+      >
+        <button
+          type="button"
+          onClick={onDuplicate}
+          aria-label={t('objDuplicate')}
+          title={t('objDuplicate')}
+          className={`w-9 h-9 rounded-xl flex items-center justify-center transition-colors cursor-pointer ${compactBtn}`}
+        >
+          <Copy className="w-4 h-4" />
+        </button>
+
+        <button
+          type="button"
+          onPointerDown={(e) => {
+            if (!onRequestClearCanvas) return;
+            stopDeleteLongPress();
+            deleteLongPressedRef.current = false;
+            deletePressStartRef.current = { x: e.clientX, y: e.clientY };
+            setDeletePressing(true);
+            deleteLongPressTimerRef.current = window.setTimeout(() => {
+              deleteLongPressedRef.current = true;
+              deleteLongPressTimerRef.current = null;
+              setDeletePressing(false);
+              if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+                navigator.vibrate(18);
+              }
+              onRequestClearCanvas();
+            }, 450);
+          }}
+          onPointerMove={(e) => {
+            const st = deletePressStartRef.current;
+            if (st && Math.hypot(e.clientX - st.x, e.clientY - st.y) > 10) {
+              stopDeleteLongPress();
+            }
+          }}
+          onPointerUp={stopDeleteLongPress}
+          onPointerCancel={stopDeleteLongPress}
+          onPointerLeave={stopDeleteLongPress}
+          onContextMenu={(e) => e.preventDefault()}
+          onClick={() => {
+            if (deleteLongPressedRef.current) {
+              deleteLongPressedRef.current = false;
+              return;
+            }
+            onDelete();
+          }}
+          aria-label={t('objDelete')}
+          title={t('deleteClearHint')}
+          className={`w-9 h-9 rounded-xl flex items-center justify-center text-red-600 dark:text-red-400 hover:bg-red-500/15 transition-all cursor-pointer touch-manipulation ${
+            deletePressing ? 'scale-95 ring-2 ring-red-500/60' : ''
+          }`}
+        >
+          <Trash2 className="w-4 h-4" />
+        </button>
+
+        <button
+          type="button"
+          onClick={onSendBackwards}
+          aria-label={t('objBack')}
+          title={t('objBack')}
+          className={`w-9 h-9 rounded-xl flex items-center justify-center transition-colors cursor-pointer ${compactBtn}`}
+        >
+          <ArrowDown className="w-4 h-4" />
+        </button>
+
+        <button
+          type="button"
+          onClick={onBringForward}
+          aria-label={t('objFront')}
+          title={t('objFront')}
+          className={`w-9 h-9 rounded-xl flex items-center justify-center transition-colors cursor-pointer ${compactBtn}`}
+        >
+          <ArrowUp className="w-4 h-4" />
+        </button>
+
+        <div className={`w-px h-5 mx-0.5 ${isDarkBg ? 'bg-neutral-700' : 'bg-slate-200'}`} />
+
+        <button
+          type="button"
+          onClick={() => setIsExpanded(true)}
+          aria-label={title}
+          title={title}
+          className={`h-9 px-2 rounded-xl flex items-center justify-center gap-0.5 transition-colors cursor-pointer ${
+            isDarkBg
+              ? 'bg-neutral-800 hover:bg-neutral-700 text-neutral-100'
+              : 'bg-slate-100 hover:bg-slate-200 text-slate-800'
+          }`}
+        >
+          <SlidersHorizontal className="w-3.5 h-3.5" />
+          <ChevronUp className="w-3 h-3 opacity-75" />
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div
       onPointerDown={(e) => e.stopPropagation()}
@@ -154,18 +315,30 @@ export const ObjectEditorPopover: React.FC<ObjectEditorPopoverProps> = ({
       className={`fixed top-4 left-3 sm:left-4 z-50 w-[min(324px,calc(100vw-24px))] max-h-[calc(100dvh-90px)] rounded-2xl border backdrop-blur-md flex flex-col overflow-hidden transition-all duration-150 ${surface}`}
     >
       {/* Header */}
-      <div className={`px-4 py-3 border-b flex items-center justify-between ${divider}`}>
+      <div className={`px-4 py-3 border-b flex items-center justify-between gap-2 ${divider}`}>
         <span className="text-sm font-semibold truncate">{title}</span>
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label={t('closeLabel')}
-          className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${
-            isDarkBg ? 'hover:bg-neutral-800 text-neutral-300' : 'hover:bg-slate-100 text-slate-500'
-          }`}
-        >
-          <X className="w-4 h-4" />
-        </button>
+        <div className="flex items-center gap-1 shrink-0">
+          <button
+            type="button"
+            onClick={() => setIsExpanded(false)}
+            aria-label={t('closeLabel')}
+            className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${
+              isDarkBg ? 'hover:bg-neutral-800 text-neutral-300' : 'hover:bg-slate-100 text-slate-500'
+            }`}
+          >
+            <ChevronDown className="w-4 h-4" />
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label={t('closeLabel')}
+            className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${
+              isDarkBg ? 'hover:bg-neutral-800 text-neutral-300' : 'hover:bg-slate-100 text-slate-500'
+            }`}
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 min-h-0 bp-scroll overflow-y-auto p-4 space-y-4">
@@ -254,6 +427,119 @@ export const ObjectEditorPopover: React.FC<ObjectEditorPopoverProps> = ({
                   </option>
                 ))}
               </select>
+            </div>
+
+            <hr className={divider} />
+
+            {/* Text Contour & Artistic Brush */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className={`text-xs font-medium ${mutedText}`}>{t('sectionStroke')}</span>
+                <span className="text-xs font-semibold tabular-nums">{info.strokeWidth}px</span>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={24}
+                value={info.strokeWidth}
+                onChange={(e) =>
+                  onUpdateStroke({
+                    width: Number(e.target.value),
+                    color: info.strokeColor || info.textColor,
+                  })
+                }
+                className="w-full h-2 rounded-lg accent-blue-600 cursor-pointer"
+              />
+
+              <div>
+                <div className={`text-[11px] font-medium mb-1.5 ${mutedText}`}>
+                  {t('brushTypeLabel')}
+                </div>
+                <div className={`grid grid-cols-3 gap-1 p-1 rounded-xl ${subSurface}`}>
+                  {brushTypes.map((bt) => {
+                    const active = currentBrushType === bt.id;
+                    return (
+                      <button
+                        key={bt.id}
+                        type="button"
+                        onClick={() => handleSelectBrushType(bt.id)}
+                        title={t(bt.labelKey)}
+                        className={`min-h-[38px] px-1 py-1 rounded-lg flex flex-col items-center justify-center gap-0.5 text-[10px] font-medium transition-colors cursor-pointer ${
+                          active
+                            ? 'bg-blue-600 text-white shadow-sm'
+                            : isDarkBg
+                              ? 'text-neutral-300 hover:bg-neutral-700/60 hover:text-white'
+                              : 'text-slate-600 hover:bg-white/70 hover:text-slate-900'
+                        }`}
+                      >
+                        {bt.icon}
+                        <span className="truncate max-w-full leading-tight">{t(bt.labelKey)}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {(info.strokeWidth > 0 || currentBrushType !== 'standard') && (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <label
+                      className={`relative w-8 h-8 rounded-lg border overflow-hidden cursor-pointer shrink-0 ${
+                        isDarkBg ? 'border-neutral-600' : 'border-slate-300'
+                      }`}
+                    >
+                      <input
+                        type="color"
+                        value={info.strokeColor}
+                        onChange={(e) => onUpdateStroke({ color: e.target.value })}
+                        className="absolute inset-0 w-[150%] h-[150%] -top-1/4 -left-1/4 cursor-pointer border-0 p-0"
+                      />
+                    </label>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {QUICK_COLOR_SWATCHES.map((hex) => (
+                        <button
+                          key={hex}
+                          type="button"
+                          onClick={() => onUpdateStroke({ color: hex })}
+                          className={`w-6 h-6 rounded-full border transition-transform cursor-pointer ${
+                            info.strokeColor.toLowerCase() === hex.toLowerCase()
+                              ? 'ring-2 ring-blue-500 ring-offset-1 scale-110'
+                              : 'hover:scale-105'
+                          } ${
+                            hex === '#FFFFFF'
+                              ? 'border-slate-300'
+                              : isDarkBg
+                                ? 'border-neutral-600'
+                                : 'border-black/15'
+                          }`}
+                          style={{ backgroundColor: hex }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className={`text-[11px] font-medium ${mutedText}`}>
+                        {t('strokeOpacity')}
+                      </span>
+                      <span className="text-[11px] font-semibold tabular-nums">
+                        {Math.round((info.strokeOpacity ?? 1) * 100)}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      value={Math.round((info.strokeOpacity ?? 1) * 100)}
+                      onChange={(e) =>
+                        onUpdateStroke({ opacity: Number(e.target.value) / 100 })
+                      }
+                      className="w-full h-2 rounded-lg accent-blue-600 cursor-pointer"
+                    />
+                  </div>
+                </div>
+              )}
             </div>
           </>
         )}
@@ -354,7 +640,38 @@ export const ObjectEditorPopover: React.FC<ObjectEditorPopoverProps> = ({
               </div>
             )}
 
-            {info.kind !== 'image' && !info.isSpray && (
+            {!info.isSpray && (
+              <div>
+                <div className={`text-[11px] font-medium mb-1.5 ${mutedText}`}>
+                  {t('brushTypeLabel')}
+                </div>
+                <div className={`grid grid-cols-3 gap-1 p-1 rounded-xl ${subSurface}`}>
+                  {brushTypes.map((bt) => {
+                    const active = currentBrushType === bt.id;
+                    return (
+                      <button
+                        key={bt.id}
+                        type="button"
+                        onClick={() => handleSelectBrushType(bt.id)}
+                        title={t(bt.labelKey)}
+                        className={`min-h-[38px] px-1 py-1 rounded-lg flex flex-col items-center justify-center gap-0.5 text-[10px] font-medium transition-colors cursor-pointer ${
+                          active
+                            ? 'bg-blue-600 text-white shadow-sm'
+                            : isDarkBg
+                              ? 'text-neutral-300 hover:bg-neutral-700/60 hover:text-white'
+                              : 'text-slate-600 hover:bg-white/70 hover:text-slate-900'
+                        }`}
+                      >
+                        {bt.icon}
+                        <span className="truncate max-w-full leading-tight">{t(bt.labelKey)}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {info.kind !== 'image' && !info.isSpray && !isArtisticContourBrush(currentBrushType) && (
               <div>
                 <div className="flex items-center justify-between gap-2 mb-1.5">
                   <span className={`text-[11px] font-medium ${mutedText}`}>

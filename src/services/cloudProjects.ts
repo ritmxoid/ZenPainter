@@ -215,14 +215,28 @@ function computeNextExpiryTimestamp(): Timestamp {
   return Timestamp.fromMillis(Date.now() + TTL_MS);
 }
 
+const inFlightProfileSyncs = new Map<string, Promise<{ hideWelcomeTutorial: boolean }>>();
+const inFlightDraftSaves = new Map<string, Promise<boolean>>();
+
 export async function ensureUserProfile(
   user: User,
   localHideTutorial?: boolean
 ): Promise<{ hideWelcomeTutorial: boolean }> {
-  const path = `users/${user.uid}`;
-  const ref = doc(db, 'users', user.uid);
-  try {
-    const snap = await getDoc(ref);
+  const existing = inFlightProfileSyncs.get(user.uid);
+  if (existing) {
+    return existing;
+  }
+
+  const run = (async (): Promise<{ hideWelcomeTutorial: boolean }> => {
+    const path = `users/${user.uid}`;
+    const ref = doc(db, 'users', user.uid);
+    let snap;
+    try {
+      snap = await getDoc(ref);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.GET, path);
+    }
+
     const email = (user.email || `${user.uid}@zenpainter.local`).slice(0, 320);
     const displayName = (
       user.displayName ||
@@ -231,14 +245,18 @@ export async function ensureUserProfile(
 
     if (!snap.exists()) {
       const hide = Boolean(localHideTutorial);
-      await setDoc(ref, {
-        uid: user.uid,
-        email,
-        displayName,
-        hideWelcomeTutorial: hide,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
+      try {
+        await setDoc(ref, {
+          uid: user.uid,
+          email,
+          displayName,
+          hideWelcomeTutorial: hide,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.CREATE, path);
+      }
       return { hideWelcomeTutorial: hide };
     }
 
@@ -251,16 +269,27 @@ export async function ensureUserProfile(
       data.displayName !== displayName ||
       data.hideWelcomeTutorial !== mergedHide
     ) {
-      await updateDoc(ref, {
-        email,
-        displayName,
-        hideWelcomeTutorial: mergedHide,
-        updatedAt: serverTimestamp(),
-      });
+      try {
+        await updateDoc(ref, {
+          email,
+          displayName,
+          hideWelcomeTutorial: mergedHide,
+          updatedAt: serverTimestamp(),
+        });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.UPDATE, path);
+      }
     }
     return { hideWelcomeTutorial: mergedHide };
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, path);
+  })();
+
+  inFlightProfileSyncs.set(user.uid, run);
+  try {
+    return await run;
+  } finally {
+    if (inFlightProfileSyncs.get(user.uid) === run) {
+      inFlightProfileSyncs.delete(user.uid);
+    }
   }
 }
 
@@ -656,72 +685,96 @@ export async function saveCloudDraft(
   user: User,
   input: SaveCloudDraftInput
 ): Promise<boolean> {
-  const rawObjects = Array.isArray(input.canvasData?.objects)
-    ? (input.canvasData.objects as unknown[])
-    : [];
-  const sanitizedObjects = rawObjects
-    .slice(0, 3000)
-    .map((obj) => sanitizeValueForFirestore(obj, false))
-    .filter((obj): obj is Record<string, unknown> => Boolean(obj && typeof obj === 'object'));
+  const previous = inFlightDraftSaves.get(user.uid) ?? Promise.resolve(false);
+  const next = previous
+    .catch(() => false)
+    .then(async (): Promise<boolean> => {
+      const rawObjects = Array.isArray(input.canvasData?.objects)
+        ? (input.canvasData.objects as unknown[])
+        : [];
+      const sanitizedObjects = rawObjects
+        .slice(0, 3000)
+        .map((obj) => sanitizeValueForFirestore(obj, false))
+        .filter((obj): obj is Record<string, unknown> => Boolean(obj && typeof obj === 'object'));
 
-  const sanitizedCanvasData: SerializedCanvasData = {
-    version: String(input.canvasData?.version || '5.3.0').slice(0, 40),
-    objects: sanitizedObjects,
-  };
+      const sanitizedCanvasData: SerializedCanvasData = {
+        version: String(input.canvasData?.version || '5.3.0').slice(0, 40),
+        objects: sanitizedObjects,
+      };
 
-  const validatedSize = buildValidatedCanvasSize(input.canvasSize);
-  const validatedBg = buildValidatedBgConfig(input.bgConfig);
-  const exportScope: ExportScope = input.exportScope === 'artwork' ? 'artwork' : 'canvas';
-  const activeProjectId = String(input.activeProjectId || '').slice(0, 128);
-  const activeProjectTitle = String(input.activeProjectTitle || '').slice(0, 120);
+      const validatedSize = buildValidatedCanvasSize(input.canvasSize);
+      const validatedBg = buildValidatedBgConfig(input.bgConfig);
+      const exportScope: ExportScope = input.exportScope === 'artwork' ? 'artwork' : 'canvas';
+      const activeProjectId = String(input.activeProjectId || '').slice(0, 128);
+      const activeProjectTitle = String(input.activeProjectTitle || '').slice(0, 120);
 
-  const payload = {
-    ownerId: user.uid,
-    appVersion: APP_VERSION.slice(0, 24),
-    objectCount: sanitizedObjects.length,
-    exportScope,
-    canvasSize: validatedSize,
-    bgConfig: validatedBg,
-    canvasData: sanitizedCanvasData,
-    activeProjectId,
-    activeProjectTitle,
-  };
+      const payload = {
+        ownerId: user.uid,
+        appVersion: APP_VERSION.slice(0, 24),
+        objectCount: sanitizedObjects.length,
+        exportScope,
+        canvasSize: validatedSize,
+        bgConfig: validatedBg,
+        canvasData: sanitizedCanvasData,
+        activeProjectId,
+        activeProjectTitle,
+      };
 
-  const estimatedBytes = new Blob([JSON.stringify(payload)]).size;
-  if (estimatedBytes > MAX_FIRESTORE_DOC_BYTES) {
-    return false;
-  }
+      const estimatedBytes = new Blob([JSON.stringify(payload)]).size;
+      if (estimatedBytes > MAX_FIRESTORE_DOC_BYTES) {
+        return false;
+      }
 
-  const ref = doc(db, 'userDrafts', user.uid);
-  const path = `userDrafts/${user.uid}`;
-  const expiresAt = computeNextExpiryTimestamp();
+      const ref = doc(db, 'userDrafts', user.uid);
+      const path = `userDrafts/${user.uid}`;
+      const expiresAt = computeNextExpiryTimestamp();
 
+      let existingSnap;
+      try {
+        existingSnap = await getDoc(ref);
+      } catch (error) {
+        handleFirestoreError(error, OperationType.GET, path);
+      }
+
+      if (existingSnap.exists()) {
+        try {
+          await updateDoc(ref, {
+            appVersion: payload.appVersion,
+            objectCount: payload.objectCount,
+            exportScope: payload.exportScope,
+            canvasSize: payload.canvasSize,
+            bgConfig: payload.bgConfig,
+            canvasData: payload.canvasData,
+            activeProjectId: payload.activeProjectId,
+            activeProjectTitle: payload.activeProjectTitle,
+            updatedAt: serverTimestamp(),
+            expiresAt,
+          });
+        } catch (error) {
+          handleFirestoreError(error, OperationType.UPDATE, path);
+        }
+      } else {
+        try {
+          await setDoc(ref, {
+            ...payload,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+            expiresAt,
+          });
+        } catch (error) {
+          handleFirestoreError(error, OperationType.CREATE, path);
+        }
+      }
+      return true;
+    });
+
+  inFlightDraftSaves.set(user.uid, next);
   try {
-    const existingSnap = await getDoc(ref);
-    if (existingSnap.exists()) {
-      await updateDoc(ref, {
-        appVersion: payload.appVersion,
-        objectCount: payload.objectCount,
-        exportScope: payload.exportScope,
-        canvasSize: payload.canvasSize,
-        bgConfig: payload.bgConfig,
-        canvasData: payload.canvasData,
-        activeProjectId: payload.activeProjectId,
-        activeProjectTitle: payload.activeProjectTitle,
-        updatedAt: serverTimestamp(),
-        expiresAt,
-      });
-    } else {
-      await setDoc(ref, {
-        ...payload,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-        expiresAt,
-      });
+    return await next;
+  } finally {
+    if (inFlightDraftSaves.get(user.uid) === next) {
+      inFlightDraftSaves.delete(user.uid);
     }
-    return true;
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, path);
   }
 }
 

@@ -46,7 +46,6 @@ const EXCLUDED_TOP_DIRS = new Set([
   'node_modules',
   '.git',
   '.aistudio',
-  'dist',
   'dev-dist',
 ]);
 
@@ -57,12 +56,17 @@ function collectProjectFiles(rootDir: string, currentDir = rootDir, acc: string[
     const rel = path.relative(rootDir, abs).split(path.sep).join('/');
     if (entry.isDirectory()) {
       const top = rel.split('/')[0];
-      if (EXCLUDED_TOP_DIRS.has(top) || rel === 'public/assets/aistudio') {
+      if (EXCLUDED_TOP_DIRS.has(top)) {
         continue;
       }
       collectProjectFiles(rootDir, abs, acc);
     } else if (entry.isFile()) {
-      if (rel === 'server.js' || rel.endsWith('.zip')) {
+      if (
+        rel === 'server.js' ||
+        rel.endsWith('.zip') ||
+        rel === '.env' ||
+        rel.startsWith('.env.local')
+      ) {
         continue;
       }
       acc.push(rel);
@@ -264,7 +268,6 @@ export default defineConfig(() => {
           type: 'module',
         },
       }),
-      projectBackupZipPlugin(),
       // Copies src/assets into dist/ so root-relative URLs like
       // "/src/assets/images/..." (e.g. generate_image output) still resolve
       // in production builds. Do not remove.
@@ -283,6 +286,7 @@ export default defineConfig(() => {
           }
         },
       },
+      projectBackupZipPlugin(),
     ],
     resolve: {
       alias: {

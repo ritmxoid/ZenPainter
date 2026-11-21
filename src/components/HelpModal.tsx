@@ -11,8 +11,6 @@ import {
   ImagePlus,
   Layers,
   Magnet,
-  Maximize2,
-  Minimize2,
   MoreHorizontal,
   MoreVertical,
   MousePointer2,
@@ -41,7 +39,6 @@ interface HelpModalProps {
   lang: SupportedLanguage;
   isDarkBg: boolean;
   dontShowAgain: boolean;
-  initialFullscreenDemo?: boolean;
   onToggleDontShowAgain: (next: boolean) => void;
   onClose: () => void;
 }
@@ -567,14 +564,12 @@ export const HelpModal: React.FC<HelpModalProps> = ({
   lang,
   isDarkBg,
   dontShowAgain,
-  initialFullscreenDemo = false,
   onToggleDontShowAgain,
   onClose,
 }) => {
   const copy = useMemo(() => getHelpCopy(lang), [lang]);
   const [activeTab, setActiveTab] = useState<'demo' | 'guide'>('demo');
   const [isPlaying, setIsPlaying] = useState(true);
-  const [isFullscreenDemo, setIsFullscreenDemo] = useState(Boolean(initialFullscreenDemo));
   const [timeSec, setTimeSec] = useState(0);
   const [guideQuery, setGuideQuery] = useState('');
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -584,7 +579,6 @@ export const HelpModal: React.FC<HelpModalProps> = ({
   useEffect(() => {
     trackWindowOpen('help_tutorial_modal', {
       initial_tab: 'demo',
-      fullscreen: Boolean(initialFullscreenDemo),
       dont_show_again: dontShowAgain,
       language: lang,
     });
@@ -1403,7 +1397,7 @@ export const HelpModal: React.FC<HelpModalProps> = ({
         dir={lang === 'ar' ? 'rtl' : 'ltr'}
         onClick={(e) => e.stopPropagation()}
         className={`${
-          isFullscreenDemo && activeTab === 'demo'
+          activeTab === 'demo'
             ? 'w-[calc(100vw-12px)] sm:w-[calc(100vw-28px)] h-[calc(100dvh-12px)] sm:h-[calc(100dvh-28px)]'
             : 'w-[min(760px,100%)] max-h-[calc(100dvh-20px)]'
         } rounded-2xl border flex flex-col overflow-hidden transition-all duration-150 ${surface}`}
@@ -1488,7 +1482,6 @@ export const HelpModal: React.FC<HelpModalProps> = ({
               <button
                 type="button"
                 onClick={() => {
-                  setIsFullscreenDemo(false);
                   setActiveTab('guide');
                   trackFunction('help_switch_tab', 'help', { tab: 'guide' });
                 }}
@@ -1527,22 +1520,18 @@ export const HelpModal: React.FC<HelpModalProps> = ({
               {/* Animated Canvas Showcase Stage with Genuine Scaled RightSidebar Replica */}
               <div
                 dir="ltr"
-                style={isFullscreenDemo ? { containerType: 'size' } : undefined}
-                className={`relative rounded-2xl border overflow-hidden flex items-center justify-center ${
-                  isFullscreenDemo ? 'flex-1 min-h-[240px]' : 'w-full aspect-[16/9]'
-                } ${isDarkBg ? 'border-neutral-700 bg-neutral-950' : 'border-slate-200 bg-slate-50'}`}
+                style={{ containerType: 'size' }}
+                className={`relative rounded-2xl border overflow-hidden flex items-center justify-center flex-1 min-h-[240px] ${
+                  isDarkBg ? 'border-neutral-700 bg-neutral-950' : 'border-slate-200 bg-slate-50'
+                }`}
               >
                 {/* Locked 16:9 Coordinate Stage so Canvas, Real Toolbar & SVG Cursor Stay 1:1 Aligned */}
                 <div
-                  style={
-                    isFullscreenDemo
-                      ? {
-                          width: 'min(100cqw, calc(100cqh * 16 / 9))',
-                          height: 'min(100cqh, calc(100cqw * 9 / 16))',
-                          containerType: 'size',
-                        }
-                      : { containerType: 'size' }
-                  }
+                  style={{
+                    width: 'min(100cqw, calc(100cqh * 16 / 9))',
+                    height: 'min(100cqh, calc(100cqw * 9 / 16))',
+                    containerType: 'size',
+                  }}
                   className="relative w-full h-full overflow-hidden"
                 >
                   <canvas ref={canvasRef} className="w-full h-full block" />
@@ -1743,31 +1732,6 @@ export const HelpModal: React.FC<HelpModalProps> = ({
                       {activeStep.desc}
                     </div>
                   </div>
-
-                  {/* Fullscreen Demo Toggle Button (bottom-left so top-right authentic Eye trigger is clear) */}
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setIsFullscreenDemo((f) => {
-                        const next = !f;
-                        trackFunction('help_demo_fullscreen', 'help', { fullscreen: next });
-                        return next;
-                      })
-                    }
-                    title={isFullscreenDemo ? copy.fullscreenExit : copy.fullscreenEnter}
-                    aria-label={isFullscreenDemo ? copy.fullscreenExit : copy.fullscreenEnter}
-                    className={`absolute bottom-2.5 left-2 z-30 w-8 h-8 rounded-xl border backdrop-blur-sm flex items-center justify-center transition-colors cursor-pointer ${
-                      isDarkBg
-                        ? 'bg-neutral-900/65 border-neutral-600/60 text-neutral-100 hover:bg-neutral-800/90'
-                        : 'bg-white/75 border-slate-300/80 text-slate-700 hover:bg-white'
-                    }`}
-                  >
-                    {isFullscreenDemo ? (
-                      <Minimize2 className="w-4 h-4" />
-                    ) : (
-                      <Maximize2 className="w-4 h-4" />
-                    )}
-                  </button>
 
                   {/* Progress Bar along bottom of canvas */}
                   <div className="absolute bottom-0 left-0 right-0 z-30 h-1 bg-black/10 dark:bg-white/10">

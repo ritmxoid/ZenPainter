@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronLeft, ChevronRight, Search, Smile, Shapes, X } from 'lucide-react';
 import { OFFLINE_EMOJIS } from '../constants/emojis';
 import { QUICK_COLOR_SWATCHES } from '../constants/fonts';
-import { WIREFRAME_STAMPS } from '../constants/stamps';
+import { STAMP_RU_NAMES, WIREFRAME_STAMPS } from '../constants/stamps';
 import { TranslationKey } from '../i18n/translations';
 import {
   EmojiCategory,
@@ -25,6 +25,13 @@ function getEmojiLabel(em: EmojiDefinition, lang: SupportedLanguage): string {
     return first.charAt(0).toUpperCase() + first.slice(1);
   }
   return em.char;
+}
+
+function getStampLabel(stamp: StampDefinition, lang: SupportedLanguage): string {
+  if (lang === 'ru' || lang === 'uk' || lang === 'be' || lang === 'kk') {
+    return STAMP_RU_NAMES[stamp.id] || stamp.name;
+  }
+  return stamp.name;
 }
 
 interface StampsPopoverProps {
@@ -108,12 +115,13 @@ export const StampsPopover: React.FC<StampsPopoverProps> = ({
       if (category !== 'all' && s.category !== category) return false;
       if (!q) return true;
       return (
+        getStampLabel(s, lang).toLowerCase().includes(q) ||
         s.name.toLowerCase().includes(q) ||
         s.id.toLowerCase().includes(q) ||
         s.keywords.toLowerCase().includes(q)
       );
     });
-  }, [category, search]);
+  }, [category, lang, search]);
 
   const filteredEmojis = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -369,35 +377,39 @@ export const StampsPopover: React.FC<StampsPopoverProps> = ({
             </div>
           ) : (
             <div className="grid grid-cols-4 gap-1.5">
-              {filteredStamps.map((stamp) => (
-                <button
-                  key={stamp.id}
-                  type="button"
-                  onClick={() => onAddStamp(stamp, color)}
-                  title={stamp.name}
-                  className={`min-h-[58px] px-1.5 py-2 rounded-xl border flex flex-col items-center justify-center gap-1 transition-all cursor-pointer active:scale-95 ${
-                    isDarkBg
-                      ? 'border-neutral-800 bg-neutral-800/40 hover:bg-neutral-800 hover:border-neutral-600 text-neutral-100'
-                      : 'border-slate-200/80 bg-slate-50/70 hover:bg-blue-50/70 hover:border-blue-300 text-slate-800'
-                  }`}
-                >
-                  <svg
-                    viewBox="0 0 24 24"
-                    width="22"
-                    height="22"
-                    fill="none"
-                    stroke={color}
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    className="shrink-0"
-                    dangerouslySetInnerHTML={{ __html: stamp.paths }}
-                  />
-                  <span className={`text-[10px] leading-tight truncate max-w-full ${mutedText}`}>
-                    {stamp.name}
-                  </span>
-                </button>
-              ))}
+              {filteredStamps.map((stamp) => {
+                const stampLabel = getStampLabel(stamp, lang);
+                return (
+                  <button
+                    key={stamp.id}
+                    type="button"
+                    onClick={() => onAddStamp(stamp, color)}
+                    title={stampLabel}
+                    aria-label={stampLabel}
+                    className={`min-h-[58px] px-1.5 py-2 rounded-xl border flex flex-col items-center justify-center gap-1 transition-all cursor-pointer active:scale-95 ${
+                      isDarkBg
+                        ? 'border-neutral-800 bg-neutral-800/40 hover:bg-neutral-800 hover:border-neutral-600 text-neutral-100'
+                        : 'border-slate-200/80 bg-slate-50/70 hover:bg-blue-50/70 hover:border-blue-300 text-slate-800'
+                    }`}
+                  >
+                    <svg
+                      viewBox="0 0 24 24"
+                      width="22"
+                      height="22"
+                      fill="none"
+                      stroke={color}
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      className="shrink-0"
+                      dangerouslySetInnerHTML={{ __html: stamp.paths }}
+                    />
+                    <span className={`text-[10px] leading-tight truncate max-w-full ${mutedText}`}>
+                      {stampLabel}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           )
         ) : filteredEmojis.length === 0 ? (

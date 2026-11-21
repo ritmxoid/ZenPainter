@@ -8,6 +8,11 @@ import {
   type BrushPresetId,
   type StrokeSession,
 } from './brushes/brushEngine';
+import {
+  attachArtisticBrushRenderer,
+  isArtisticContourBrush,
+  rehydrateArtisticBrushObject,
+} from './brushes/contourBrushRenderer';
 import { ActionsPopover } from './components/ActionsPopover';
 import { CloudSaveModal } from './components/CloudSaveModal';
 import { EraserPopover } from './components/EraserPopover';
@@ -677,19 +682,21 @@ export default function App() {
     const opacity = typeof active.opacity === 'number' ? active.opacity : 1;
 
     if (primary.type === 'i-text' || primary.type === 'text' || primary.type === 'textbox') {
-      const parsed = parseColorAndOpacity(primary.fill);
+      const parsedFill = parseColorAndOpacity(primary.fill);
+      const parsedStroke = parseColorAndOpacity(primary.stroke, primary.strokeOpacity);
       return {
         kind: 'text',
-        strokeColor: parsed.hex,
-        strokeOpacity: parsed.opacity,
-        strokeWidth: 0,
-        strokePattern: 'solid',
-        doubleLine: false,
+        strokeColor: primary.strokeColorHex || (primary.stroke ? parsedStroke.hex : parsedFill.hex),
+        strokeOpacity: primary.strokeOpacity ?? (primary.stroke ? parsedStroke.opacity : 1),
+        strokeWidth: typeof primary.strokeWidth === 'number' ? primary.strokeWidth : 0,
+        strokePattern: primary.strokePattern || 'solid',
+        doubleLine: Boolean(primary.doubleLine),
+        brushType: primary.brushType || 'standard',
         selectionCount: isMulti ? active._objects.length : 1,
         fill: DEFAULT_FILL,
         opacity,
         cornerRoundRatio: null,
-        textColor: parsed.hex,
+        textColor: parsedFill.hex,
         fontFamily: primary.fontFamily || 'Montserrat',
         fontSize: primary.fontSize || 36,
         screenRect,
@@ -781,8 +788,8 @@ export default function App() {
         typeof primary.strokeWidth === 'number' ? primary.strokeWidth : strokeRef.current.width,
       strokePattern: primary.strokePattern || 'solid',
       doubleLine: Boolean(primary.doubleLine),
-      brushType: primary.brushType,
-      isSpray: Boolean(primary.isSprayGroup || primary.brushType === 'spray'),
+      brushType: primary.brushType || 'standard',
+      isSpray: Boolean(primary.isSprayGroup),
       isClosedContour: Boolean(primary.isClosedContour || isClosedPath),
       canToggleClosedContour,
       isPolygonMorphable: Boolean(primary.isPolygonMorphable && primary.polygonVariant),
@@ -869,6 +876,7 @@ export default function App() {
               borderColor: '#2563EB',
             });
             refreshObjectPhotoFill(obj, fc);
+            rehydrateArtisticBrushObject(obj);
           }
         });
         fc.discardActiveObject();
@@ -3199,9 +3207,13 @@ export default function App() {
       });
       if (cloned.type === 'activeSelection') {
         cloned.canvas = fc;
-        cloned.forEachObject((o: any) => fc.add(o));
+        cloned.forEachObject((o: any) => {
+          rehydrateArtisticBrushObject(o);
+          fc.add(o);
+        });
         cloned.setCoords();
       } else {
+        rehydrateArtisticBrushObject(cloned);
         fc.add(cloned);
       }
       fc.setActiveObject(cloned);
@@ -3451,6 +3463,7 @@ export default function App() {
             fc.discardActiveObject();
             enlivened.forEach((o) => {
               o.set({ left: (o.left || 0) + 24, top: (o.top || 0) + 24 });
+              rehydrateArtisticBrushObject(o);
               fc.add(o);
             });
             if (enlivened.length === 1) {
@@ -3579,52 +3592,91 @@ export default function App() {
           const nextColor = patch.color ?? obj.strokeColorHex ?? '#0F172A';
           const nextOp = patch.opacity ?? obj.strokeOpacity ?? 1;
           const nextW = patch.width ?? obj.strokeWidth ?? 2;
+          const nextPat = patch.pattern ?? obj.strokePattern ?? 'solid';
+          const nextBrush = patch.brushType ?? obj.brushType ?? 'standard';
           const rgba = nextW > 0 ? applyColorOpacity(nextColor, nextOp) : null;
           obj.set({
             strokeColorHex: nextColor,
             strokeOpacity: nextOp,
             strokeWidth: nextW,
-            strokePattern: patch.pattern ?? obj.strokePattern ?? 'solid',
+            strokePattern: nextPat,
             doubleLine: patch.doubleLine ?? obj.doubleLine ?? false,
+            brushType: nextBrush,
           });
           obj._objects.forEach((child: any) => {
             child.set({
+              strokeColorHex: nextColor,
+              strokeOpacity: nextOp,
               stroke: rgba,
               strokeWidth: nextW,
-              strokeDashArray: getScaledDashArray(patch.pattern ?? obj.strokePattern ?? 'solid', Math.max(1, nextW)) || undefined,
+              strokeDashArray: getScaledDashArray(nextPat, Math.max(1, nextW)) || undefined,
+              brushType: nextBrush,
+              shadow:
+                nextBrush === 'soft' && nextW > 0
+                  ? new fabric.Shadow({
+                      blur: Math.max(4, nextW * 0.9),
+                      offsetX: 0,
+                      offsetY: 0,
+                      color: applyColorOpacity(nextColor, Math.min(1, nextOp * 0.85)),
+                      affectStroke: true,
+                    })
+                  : null,
               dirty: true,
             });
           });
+          attachArtisticBrushRenderer(obj);
           return;
         }
 
         const nextColor = patch.color ?? obj.strokeColorHex ?? '#0F172A';
         const nextOp = patch.opacity ?? obj.strokeOpacity ?? 1;
-        const nextW = patch.width ?? obj.strokeWidth ?? 3;
+        const nextW =
+          patch.width ??
+          (typeof obj.strokeWidth === 'number' ? obj.strokeWidth : 3);
         const nextPat = patch.pattern ?? obj.strokePattern ?? 'solid';
         const nextDouble = patch.doubleLine ?? obj.doubleLine ?? false;
-        const nextBrush = patch.brushType ?? obj.brushType;
+        const nextBrush = patch.brushType ?? obj.brushType ?? 'standard';
 
         if (obj.isGridRect && Array.isArray(obj._objects)) {
+          const effW = Math.max(1, nextW);
           const rgba = applyColorOpacity(nextColor, nextOp);
-          const dash = getScaledDashArray(nextPat, Math.max(1, nextW));
+          const dash = getScaledDashArray(nextPat, effW);
           obj.set({
             strokeColorHex: nextColor,
             strokeOpacity: nextOp,
-            strokeWidth: Math.max(1, nextW),
+            strokeWidth: effW,
             strokePattern: nextPat,
             doubleLine: nextDouble,
+            brushType: nextBrush,
           });
           obj._objects.forEach((c: any, idx: number) => {
+            const childW = idx === 0 ? effW : Math.max(1, effW * 0.75);
             c.set({
+              strokeColorHex: nextColor,
+              strokeOpacity: nextOp,
               stroke: rgba,
-              strokeWidth: idx === 0 ? Math.max(1, nextW) : Math.max(1, nextW * 0.75),
+              strokeWidth: childW,
               strokeDashArray: dash || undefined,
+              brushType: nextBrush,
+              shadow:
+                nextBrush === 'soft'
+                  ? new fabric.Shadow({
+                      blur: Math.max(4, childW * 0.9),
+                      offsetX: 0,
+                      offsetY: 0,
+                      color: applyColorOpacity(nextColor, Math.min(1, nextOp * 0.85)),
+                      affectStroke: true,
+                    })
+                  : null,
               dirty: true,
             });
           });
+          attachArtisticBrushRenderer(obj);
           return;
         }
+
+        const isTextObj =
+          obj.type === 'i-text' || obj.type === 'textbox' || obj.type === 'text';
 
         obj.set({
           strokeColorHex: nextColor,
@@ -3634,23 +3686,25 @@ export default function App() {
           strokePattern: nextPat,
           strokeDashArray: getScaledDashArray(nextPat, Math.max(1, nextW)) || undefined,
           doubleLine: nextDouble,
-          ...(nextBrush ? { brushType: nextBrush } : {}),
+          brushType: nextBrush,
+          ...(isTextObj ? { paintFirst: 'stroke' } : {}),
           dirty: true,
         });
 
         if (nextBrush === 'soft') {
           obj.set({
             shadow: new fabric.Shadow({
-              blur: Math.max(4, nextW * 0.9),
+              blur: Math.max(4, Math.max(1, nextW) * 0.9),
               offsetX: 0,
               offsetY: 0,
               color: applyColorOpacity(nextColor, Math.min(1, nextOp * 0.85)),
               affectStroke: true,
             }),
           });
-        } else if (nextBrush === 'standard') {
+        } else if (nextBrush === 'standard' || isArtisticContourBrush(nextBrush)) {
           obj.set({ shadow: null });
         }
+        attachArtisticBrushRenderer(obj);
       });
 
       fc.requestRenderAll();
@@ -3696,7 +3750,7 @@ export default function App() {
         opacity: active.strokeOpacity ?? strokeRef.current.opacity,
         width: active.strokeWidth ?? strokeRef.current.width,
         pattern: active.strokePattern || 'solid',
-        brushType: 'standard',
+        brushType: active.brushType || 'standard',
         doubleLine: Boolean(active.doubleLine),
       };
       const fl: FillSettings = active.fillMeta ? { ...active.fillMeta } : { ...fillRef.current };
@@ -3714,6 +3768,12 @@ export default function App() {
           st,
           fl
         );
+        replacement.set({ brushType: st.brushType });
+        if (Array.isArray(replacement._objects)) {
+          replacement._objects.forEach((c: any) => {
+            c.set({ brushType: st.brushType });
+          });
+        }
       } else {
         replacement = new fabric.Rect({
           left: center.x,
@@ -3731,6 +3791,7 @@ export default function App() {
           strokeDashArray: getScaledDashArray(st.pattern, Math.max(1, st.width)) || undefined,
           strokePattern: st.pattern,
           doubleLine: st.doubleLine,
+          brushType: st.brushType,
           strokeUniform: true,
           cornerColor: '#2563EB',
           borderColor: '#2563EB',
@@ -3738,6 +3799,7 @@ export default function App() {
       }
 
       replacement.set({ angle: active.angle || 0 });
+      rehydrateArtisticBrushObject(replacement);
       fc.remove(active);
       fc.add(replacement);
       fc.setActiveObject(replacement);
@@ -3824,6 +3886,7 @@ export default function App() {
         strokeDashArray: active.strokeDashArray,
         strokePattern: active.strokePattern,
         doubleLine: active.doubleLine,
+        brushType: active.brushType || 'standard',
         strokeUniform: true,
         strokeLineJoin: 'round',
         opacity: active.opacity ?? 1,
@@ -3841,6 +3904,7 @@ export default function App() {
         x: nextPoly.pathOffset?.x || 0,
         y: nextPoly.pathOffset?.y || 0,
       };
+      rehydrateArtisticBrushObject(nextPoly);
       fc.remove(active);
       fc.add(nextPoly);
       fc.setActiveObject(nextPoly);
@@ -3884,9 +3948,11 @@ export default function App() {
           strokeColorHex: active.strokeColorHex || strokeRef.current.color,
           strokeOpacity: active.strokeOpacity ?? 1,
           strokePattern: active.strokePattern || 'solid',
+          brushType: active.brushType || 'standard',
           fillMeta: { ...fl },
         }
       );
+      rehydrateArtisticBrushObject(nextArrow);
       fc.remove(active);
       fc.add(nextArrow);
       fc.setActiveObject(nextArrow);
@@ -4144,6 +4210,7 @@ export default function App() {
                     borderColor: '#2563EB',
                   });
                   refreshObjectPhotoFill(obj, fc);
+                  rehydrateArtisticBrushObject(obj);
                 }
               });
               fc.discardActiveObject();
@@ -4245,6 +4312,7 @@ export default function App() {
               borderColor: '#2563EB',
             });
             refreshObjectPhotoFill(obj, fc);
+            rehydrateArtisticBrushObject(obj);
           }
         });
         fc.discardActiveObject();
@@ -4634,6 +4702,30 @@ export default function App() {
             if (!fc || !obj) return;
             if (axis === 'x') obj.set('flipX', !obj.flipX);
             else obj.set('flipY', !obj.flipY);
+            fc.requestRenderAll();
+            pushHistory();
+          }}
+          onBringForward={() => {
+            const fc = fabricRef.current;
+            const obj = fc?.getActiveObject();
+            if (!fc || !obj) return;
+            if (obj.type === 'activeSelection' && Array.isArray(obj._objects)) {
+              [...obj._objects].reverse().forEach((o: any) => fc.bringForward(o));
+            } else {
+              fc.bringForward(obj);
+            }
+            fc.requestRenderAll();
+            pushHistory();
+          }}
+          onSendBackwards={() => {
+            const fc = fabricRef.current;
+            const obj = fc?.getActiveObject();
+            if (!fc || !obj) return;
+            if (obj.type === 'activeSelection' && Array.isArray(obj._objects)) {
+              [...obj._objects].forEach((o: any) => fc.sendBackwards(o));
+            } else {
+              fc.sendBackwards(obj);
+            }
             fc.requestRenderAll();
             pushHistory();
           }}
